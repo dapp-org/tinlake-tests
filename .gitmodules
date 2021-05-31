@@ -4,9 +4,6 @@
 [submodule "lib/tinlake"]
 	path = lib/tinlake
 	url = https://github.com/centrifuge/tinlake.git
-[submodule "lib/dss"]
-	path = lib/dss
-	url = https://github.com/makerdao/dss.git
 [submodule "lib/dss-deploy"]
 	path = lib/dss-deploy
 	url = https://github.com/makerdao/dss-deploy.git
