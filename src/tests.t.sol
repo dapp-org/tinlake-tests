@@ -42,11 +42,20 @@ import {
     PauseFab
 } from "dss-deploy/DssDeploy.sol";
 
+interface Hevm {
+    function warp(uint256) external;
+    function roll(uint256) external;
+    function store(address,bytes32,bytes32) external;
+    function sign(uint,bytes32) external returns (uint8,bytes32,bytes32);
+    function addr(uint) external returns (address);
+}
+
 contract Test is DSTest {
     TinlakeRoot root;
     LenderDeployer lenderDeployer;
     BorrowerDeployer borrowerDeployer;
     DssDeploy dssDeploy;
+    Hevm hevm = Hevm(HEVM_ADDRESS);
 
     bytes32 constant ilkId = bytes32("DROP-A");
 
@@ -90,6 +99,13 @@ contract Test is DSTest {
         dssDeploy.deployPause(pauseDelay, gov);
         dssDeploy.deployESM(gov, esmThreshold);
         dssDeploy.releaseAuth();
+
+        // make the test contract a ward of dai.
+        hevm.store(
+            address(dssDeploy.dai()),
+            keccak256(abi.encode(address(this), uint256(0))),
+            bytes32(uint(1))
+        );
 
         // -- deploy tinlake --
 
@@ -162,5 +178,9 @@ contract Test is DSTest {
 
     function test_nothing() public {
         assertTrue(true);
+        Dai dai = dssDeploy.dai();
+        assertEq(dai.totalSupply(), 0);
+        dai.mint(address(this), type(uint).max);
+        assertEq(dai.totalSupply(), type(uint).max);
     }
 }
