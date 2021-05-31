@@ -1,14 +1,14 @@
 {
     "dapptools": {
-        "branch": "master",
+        "branch": "rm-stupid-error",
         "description": "Dapp, Seth, Hevm, and more",
         "homepage": "https://dapp.tools",
         "owner": "dapphub",
         "repo": "dapptools",
-        "rev": "961dbcc6ec939103a1b78534d07672d7b4e642c1",
-        "sha256": "18gs0bjyfd1jkjbiifv69wnz9bzwzymy8zdxwl4ny3g7vkvs81dh",
+        "rev": "8bd6cf279c6ea1217f575c7383d1a6206183470a",
+        "sha256": "1j1vbgf3fbf06kygir9xd50s4zc7x12xxsbn92axiw3g7p712rd1",
         "type": "tarball",
-        "url": "https://github.com/dapphub/dapptools/archive/961dbcc6ec939103a1b78534d07672d7b4e642c1.tar.gz",
+        "url": "https://github.com/dapphub/dapptools/archive/8bd6cf279c6ea1217f575c7383d1a6206183470a.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     }
 }
