@@ -20,7 +20,7 @@ import {TitleFab} from "tinlake/borrower/fabs/title.sol";
 import {ShelfFab} from "tinlake/borrower/fabs/shelf.sol";
 import {PileFab} from "tinlake/borrower/fabs/pile.sol";
 import {CollectorFab} from "tinlake/borrower/fabs/collector.sol";
-import {NFTFeedFab} from "tinlake/borrower/fabs/nftfeed.sol";
+import {NAVFeedFab} from "tinlake/borrower/fabs/navfeed.sol";
 
 contract Test is DSTest {
     TinlakeRoot root;
@@ -74,18 +74,18 @@ contract Test is DSTest {
             address(new ShelfFab()),
             address(new PileFab()),
             address(new CollectorFab()),
-            address(new NFTFeedFab()),
+            address(new NAVFeedFab()),
             address(dai),
             "title",
             "TTL",
             0 // TODO: wtf is a discount rate?
         );
 
-        borrowerDeployer.deployCollector();
-        borrowerDeployer.deployPile();
         borrowerDeployer.deployTitle();
-        borrowerDeployer.deployShelf();
+        borrowerDeployer.deployPile();
         borrowerDeployer.deployFeed();
+        borrowerDeployer.deployShelf();
+        borrowerDeployer.deployCollector();
         borrowerDeployer.deploy();
 
         root.prepare(address(lenderDeployer), address(borrowerDeployer), address(this));
