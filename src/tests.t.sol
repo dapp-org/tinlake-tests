@@ -7,6 +7,7 @@ import {Dai} from "dss/dai.sol";
 import {TinlakeRoot} from "tinlake/root.sol";
 import {LenderDeployer} from "tinlake/lender/deployer.sol";
 import {BorrowerDeployer} from "tinlake/borrower/deployer.sol";
+import {TinlakeManager} from "tinlake-maker-lib/mgr.sol";
 
 import {TrancheFab} from "tinlake/lender/fabs/tranche.sol";
 import {MemberlistFab, Memberlist} from "tinlake/lender/fabs/memberlist.sol";
@@ -16,6 +17,8 @@ import {AssessorFab, Assessor} from "tinlake/lender/fabs/assessor.sol";
 import {CoordinatorFab, EpochCoordinator} from "tinlake/lender/fabs/coordinator.sol";
 import {OperatorFab} from "tinlake/lender/fabs/operator.sol";
 import {AssessorAdminFab} from "tinlake/lender/fabs/assessoradmin.sol";
+import {ClerkFab} from "tinlake/lender/adapters/mkr/fabs/clerk.sol";
+import {MKRLenderDeployer} from "tinlake/lender/adapters/mkr/deployer.sol";
 
 import {TitleFab, Title} from "tinlake/borrower/fabs/title.sol";
 import {ShelfFab} from "tinlake/borrower/fabs/shelf.sol";
@@ -45,6 +48,16 @@ import {
     ESMFab,
     PauseFab
 } from "dss-deploy/DssDeploy.sol";
+import {MockGuard} from "dss-deploy/DssDeploy.t.base.sol";
+import {GovActions} from "dss-deploy/govActions.sol";
+import {DSPause} from "ds-pause/pause.sol";
+
+import {AuthGemJoin} from "dss-gem-joins/join-auth.sol";
+import {RwaToken} from "rwa-example/RwaToken.sol";
+import {RwaLiquidationOracle} from "rwa-example/RwaLiquidationOracle.sol";
+import {RwaUrn} from "rwa-example/RwaUrn.sol";
+
+import {Spotter} from "dss/spot.sol";
 
 interface Hevm {
     function warp(uint256) external;
@@ -54,14 +67,56 @@ interface Hevm {
     function addr(uint) external returns (address);
 }
 
-contract Test is DSTest, Math {
+// helpers to deal with ds-pause related beuracracy
+contract ProxyActions {
+    DSPause pause;
+    GovActions govActions;
+
+    function rely(address from, address to) external {
+        address      usr = address(govActions);
+        bytes32      tag;  assembly { tag := extcodehash(usr) }
+        bytes memory fax = abi.encodeWithSignature("rely(address,address)", from, to);
+        uint         eta = now;
+
+        pause.plot(usr, tag, fax, eta);
+        pause.exec(usr, tag, fax, eta);
+    }
+
+    function file(address who, bytes32 ilk, bytes32 what, uint256 data) external {
+        address      usr = address(govActions);
+        bytes32      tag;  assembly { tag := extcodehash(usr) }
+        bytes memory fax = abi.encodeWithSignature("file(address,bytes32,bytes32,uint256)", who, ilk, what, data);
+        uint         eta = now;
+
+        pause.plot(usr, tag, fax, eta);
+        pause.exec(usr, tag, fax, eta);
+    }
+
+    function file(address who, bytes32 ilk, bytes32 what, address data) external {
+        address      usr = address(govActions);
+        bytes32      tag;  assembly { tag := extcodehash(usr) }
+        bytes memory fax = abi.encodeWithSignature("file(address,bytes32,bytes32,address)", who, ilk, what, data);
+        uint         eta = now;
+
+        pause.plot(usr, tag, fax, eta);
+        pause.exec(usr, tag, fax, eta);
+    }
+}
+
+contract Test is DSTest, Math, ProxyActions {
     TinlakeRoot root;
-    LenderDeployer lenderDeployer;
+    MKRLenderDeployer lenderDeployer;
     BorrowerDeployer borrowerDeployer;
     DssDeploy dssDeploy;
-    Hevm hevm = Hevm(HEVM_ADDRESS);
-    address dai;
+    RwaLiquidationOracle oracle;
+    AuthGemJoin gemJoin;
+    TinlakeManager mgr;
+    RwaUrn urn;
+    MockGuard authority;
 
+    Hevm hevm = Hevm(HEVM_ADDRESS);
+
+    address dai;
     Dai drop;
     Dai tin;
 
@@ -88,16 +143,21 @@ contract Test is DSTest, Math {
     Assessor assessor;
     EpochCoordinator coordinator;
 
-    bytes32 constant ilkId = bytes32("DROP-A");
+    bytes32 constant ilk = bytes32("DROP-A");
+
+    uint constant WAD = 10 ** 18;
+    uint constant RAY = 10 ** 27;
 
     function setUp() public {
 
         // -- deploy mcd --
+
         uint chainId = 1;
         uint pauseDelay = 0;
         uint esmThreshold = 0;
         address gov = address(this);
 
+        authority = new MockGuard();
         dssDeploy = new DssDeploy();
         dssDeploy.addFabs1(
             new VatFab(),
@@ -126,7 +186,7 @@ contract Test is DSTest, Math {
         dssDeploy.deployAuctions(gov);
         dssDeploy.deployLiquidator();
         dssDeploy.deployEnd();
-        dssDeploy.deployPause(pauseDelay, gov);
+        dssDeploy.deployPause(pauseDelay, address(authority));
         dssDeploy.deployESM(gov, esmThreshold);
         dssDeploy.releaseAuth();
 
@@ -137,11 +197,52 @@ contract Test is DSTest, Math {
             bytes32(uint(1))
         );
 
+        // -- prepare the proxy actions (see DssDeploy.base.t.sol) --
+
+        pause = dssDeploy.pause();
+        govActions = new GovActions();
+        authority.permit(address(this), address(pause), bytes4(keccak256("plot(address,bytes32,bytes,uint256)")));
+
+        // -- prepare rwa asset infra --
+
+        // deploy rwa token
+        RwaToken rwa = new RwaToken();
+
+        // deploy rwa oracle
+        string memory doc = "acab";
+        uint48 remediationPeriod = 1 days;
+        // TODO: what does this mean?
+        uint value = 400 ether;
+
+        oracle = new RwaLiquidationOracle(
+            address(dssDeploy.vat()),
+            address(dssDeploy.vow())
+        );
+        oracle.init(
+            ilk,
+            value,
+            doc,
+            remediationPeriod
+        );
+        this.rely(address(dssDeploy.vat()), address(oracle));
+        (,address pip,,) = oracle.ilks(ilk);
+
+        // integrate rwa oracle with dss spotter
+        // TODO: why?
+        Spotter spotter = dssDeploy.spotter();
+        this.file(address(spotter), ilk, "mat", RAY);
+        this.file(address(spotter), ilk, "pip", pip);
+        spotter.poke(ilk);
+
+        // create rwatoken gemjoin
+        gemJoin = new AuthGemJoin(address(dssDeploy.vat()), ilk, address(rwa));
+        this.rely(address(dssDeploy.vat()), address(gemJoin));
+
         // -- deploy tinlake --
 
         root = new TinlakeRoot(address(this));
 
-        lenderDeployer = new LenderDeployer(
+        lenderDeployer = new MKRLenderDeployer(
             address(root),
             address(dssDeploy.dai()),
             address(new TrancheFab()),
@@ -151,7 +252,8 @@ contract Test is DSTest, Math {
             address(new AssessorFab()),
             address(new CoordinatorFab()),
             address(new OperatorFab()),
-            address(new AssessorAdminFab())
+            address(new AssessorAdminFab()),
+            address(new ClerkFab())
         );
 
         // values set according to config.sol
@@ -173,6 +275,40 @@ contract Test is DSTest, Math {
         lenderDeployer.deployAssessor();
         lenderDeployer.deployAssessorAdmin();
         lenderDeployer.deployCoordinator();
+        lenderDeployer.deployClerk();
+
+        // create tinlake manager
+        mgr = new TinlakeManager(
+            address(dssDeploy.dai()),
+            address(dssDeploy.daiJoin()),
+            lenderDeployer.seniorToken(),
+            lenderDeployer.seniorOperator(),
+            lenderDeployer.seniorTranche(),
+            address(dssDeploy.end()),
+            address(dssDeploy.vat()),
+            address(dssDeploy.vow())
+        );
+
+        // create rwa urn
+        urn = new RwaUrn(
+            address(dssDeploy.vat()),
+            address(dssDeploy.jug()),
+            address(gemJoin),
+            address(dssDeploy.daiJoin()),
+            address(mgr)
+        );
+        gemJoin.rely(address(urn));
+        urn.hope(address(mgr));
+
+        mgr.file("urn", address(urn));
+        mgr.file("liq", address(oracle));
+
+        lenderDeployer.initMKR(
+            address(mgr),
+            address(dssDeploy.spotter()),
+            address(dssDeploy.vat()),
+            address(dssDeploy.jug())
+        );
         lenderDeployer.deploy();
 
         dai = address(dssDeploy.dai());
@@ -206,15 +342,8 @@ contract Test is DSTest, Math {
         root.prepare(address(lenderDeployer), address(borrowerDeployer), address(this));
         root.deploy();
 
-        // -- add drop as a collateral type --
+        // -- create borrower user --
 
-        //dss.deployCollateralFlip(ilkId, address join, address pip);
-        //dss.deployCollateralClip(ilkId, address join, address pip, address calc);
-        //releaseAuthFlip(bytes32 ilk);
-        //releaseAuthClip(bytes32 ilk);
-
-
-        // -- create borrower user
         borrower = new Borrower(borrowerDeployer.shelf(),
                                 address(reserve),
                                 borrowerDeployer.currency(),
@@ -252,7 +381,7 @@ contract Test is DSTest, Math {
                                        lenderDeployer.juniorTranche(),
                                        address(dai),
                                        address(tin));
-        
+
         // -- authorize this contract on the whitelist contracts
         srMemberList = Memberlist(lenderDeployer.seniorMemberlist());
         jrMemberList = Memberlist(lenderDeployer.juniorMemberlist());
@@ -262,7 +391,7 @@ contract Test is DSTest, Math {
         KYC(address(juniorInvestorA));
     }
 
-    function proveInvestmentsReturns(uint128 amount) public {
+    function testInvestmentsReturns(uint128 amount) public {
         if (amount * 1 ether > assessor.maxReserve()) return;
           investBothTranches(amount * 1 ether);
           // close epoch
@@ -299,7 +428,7 @@ contract Test is DSTest, Math {
           seniorInvestorA.disburse();
 
           juniorInvestorA.disburse();
-          
+
           // senior investor returns
           uint got = Dai(dai).balanceOf(address(seniorInvestorA));
           log_named_uint("sr investor A put in    ", rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO));
@@ -318,7 +447,7 @@ contract Test is DSTest, Math {
           assertLe(expectedjr - jrgot, 1 ether);
     }
 
-    
+
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
         uint maturityDate = 600 days;
         bytes32 lookupId = keccak256(abi.encodePacked(address(collateralNFT), tokenId));
