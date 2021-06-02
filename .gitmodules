@@ -9,7 +9,7 @@
 	url = https://github.com/makerdao/dss-deploy.git
 [submodule "lib/tinlake-maker-lib"]
 	path = lib/tinlake-maker-lib
-	url = https://github.com/centrifuge/tinlake-maker-lib.git
+	url = https://github.com/dapp-org/tinlake-maker-lib.git
 [submodule "lib/dss-gem-joins"]
 	path = lib/dss-gem-joins
 	url = https://github.com/dapp-org/dss-gem-joins
