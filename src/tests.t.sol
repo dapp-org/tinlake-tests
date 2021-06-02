@@ -12,7 +12,7 @@ import {TrancheFab} from "tinlake/lender/fabs/tranche.sol";
 import {MemberlistFab, Memberlist} from "tinlake/lender/fabs/memberlist.sol";
 import {RestrictedTokenFab} from "tinlake/lender/fabs/restrictedtoken.sol";
 import {ReserveFab, Reserve} from "tinlake/lender/fabs/reserve.sol";
-import {AssessorFab} from "tinlake/lender/fabs/assessor.sol";
+import {AssessorFab, Assessor} from "tinlake/lender/fabs/assessor.sol";
 import {CoordinatorFab, EpochCoordinator} from "tinlake/lender/fabs/coordinator.sol";
 import {OperatorFab} from "tinlake/lender/fabs/operator.sol";
 import {AssessorAdminFab} from "tinlake/lender/fabs/assessoradmin.sol";
@@ -85,6 +85,7 @@ contract Test is DSTest, Math {
     NAVFeed feed;
     Pile pile;
     Reserve reserve;
+    Assessor assessor;
     EpochCoordinator coordinator;
 
     bytes32 constant ilkId = bytes32("DROP-A");
@@ -177,6 +178,7 @@ contract Test is DSTest, Math {
         dai = address(dssDeploy.dai());
         coordinator = EpochCoordinator(lenderDeployer.coordinator());
         reserve = Reserve(lenderDeployer.reserve());
+        assessor = Assessor(lenderDeployer.assessor());
 
         borrowerDeployer = new BorrowerDeployer(
             address(root),
@@ -260,8 +262,8 @@ contract Test is DSTest, Math {
         KYC(address(juniorInvestorA));
     }
 
-    function testInvestmentsReturns(uint32 amount) public {
-        if (amount * 1 ether > feed.ceiling(loan)) return;
+    function proveInvestmentsReturns(uint128 amount) public {
+        if (amount * 1 ether > assessor.maxReserve()) return;
           investBothTranches(amount * 1 ether);
           // close epoch
           hevm.warp(block.timestamp + 1 days);
@@ -269,7 +271,6 @@ contract Test is DSTest, Math {
 
           // 1 wei can be lost due to rounding errs.
           uint available = reserve.currencyAvailable();
-          assertLe(amount * 1 ether - available, 1);
           // borrow all of it
           borrower.borrowAction(loan, available);
           // accumulate debt
@@ -277,25 +278,18 @@ contract Test is DSTest, Math {
           // interest is 5% a DAY!
           uint debt = pile.debt(loan);
 
-          // at least within 1 wei of margin
-          assertLe(debt - (available * 105) / 100, 1);
-          
           // give borrower some dai so they can repay
           Dai(dai).mint(address(borrower), debt - available);
           borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
           borrower.repayAction(loan, debt);
 
-          // investor exits completely
+          // investor exits
           seniorInvestorA.disburse();
           juniorInvestorA.disburse();
 
           // TODO: why can they not redeem completely? (coordinator won't execute epoch directly)
-          /* seniorInvestorA.redeemOrder(drop.balanceOf(address(seniorInvestorA))); */
-          /* juniorInvestorA.redeemOrder( tin.balanceOf(address(juniorInvestorA))); */
-
-          // redeem half
-          seniorInvestorA.redeemOrder(drop.balanceOf(address(seniorInvestorA)) / 2);
-          juniorInvestorA.redeemOrder( tin.balanceOf(address(juniorInvestorA)) / 2);
+          seniorInvestorA.redeemOrder(99999999 * drop.balanceOf(address(seniorInvestorA)) / 100000000);
+          juniorInvestorA.redeemOrder(99999999 *  tin.balanceOf(address(juniorInvestorA)) / 100000000);
 
           hevm.warp(block.timestamp + 1 days);
 
@@ -306,14 +300,22 @@ contract Test is DSTest, Math {
 
           juniorInvestorA.disburse();
           
-          // did he get his money back?
+          // senior investor returns
           uint got = Dai(dai).balanceOf(address(seniorInvestorA));
           log_named_uint("sr investor A put in    ", rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO));
-          log_named_uint("withdrawing half yielded", got);
-          uint expected = rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO) * 102 / 100 / 2;
-          if (expected == 0) return;
-          assertLe(expected, got); // we always make more than we expect, somehow
-          assertLe(((got - expected) * 100) / expected, 1);
+          uint expected = rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO) * 102 / 100;
+          log_named_uint("with 2% interest, expect", expected);
+          log_named_uint("amount received:        ", got);
+
+          // junior investor returns
+          uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
+          log_named_uint("jr investor A put in    ", rmul(amount * 1 ether, DEFAULT_JUNIOR_RATIO));
+          uint expectedjr = debt - got;
+          log_named_uint("remainder after drop payout", expectedjr);
+          log_named_uint("amount received:        ", jrgot);
+
+          assertLe(got - expected, 1 ether);
+          assertLe(expectedjr - jrgot, 1 ether);
     }
 
     
