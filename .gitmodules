@@ -12,4 +12,4 @@
 	url = https://github.com/centrifuge/tinlake-maker-lib.git
 [submodule "lib/dss-gem-joins"]
 	path = lib/dss-gem-joins
-	url = https://github.com/makerdao/dss-gem-joins
+	url = https://github.com/dapp-org/dss-gem-joins
