@@ -8,8 +8,8 @@ in
       seth
       hevm
       niv
-      solc-static-versions.solc_0_6_12
+      solc-static-versions.solc_0_7_6
     ];
-    DAPP_SOLC="solc-0.6.12";
+    DAPP_SOLC="solc-0.7.6";
     DAPP_REMAPPINGS=pkgs.lib.strings.fileContents ./remappings.txt;
   }

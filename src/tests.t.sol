@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-pragma solidity ^0.6.12;
+pragma solidity ^0.7.6;
 
 import {DSTest} from "ds-test/test.sol";
 import {Math} from "tinlake-math/math.sol";
@@ -16,8 +16,8 @@ import {ReserveFab, Reserve} from "tinlake/lender/fabs/reserve.sol";
 import {AssessorFab, Assessor} from "tinlake/lender/fabs/assessor.sol";
 import {CoordinatorFab, EpochCoordinator} from "tinlake/lender/fabs/coordinator.sol";
 import {OperatorFab} from "tinlake/lender/fabs/operator.sol";
-import {AssessorAdminFab} from "tinlake/lender/fabs/assessoradmin.sol";
 import {ClerkFab} from "tinlake/lender/adapters/mkr/fabs/clerk.sol";
+import {PoolAdminFab} from "tinlake/lender/fabs/pooladmin.sol";
 import {MKRLenderDeployer} from "tinlake/lender/adapters/mkr/deployer.sol";
 
 import {TitleFab, Title} from "tinlake/borrower/fabs/title.sol";
@@ -76,7 +76,7 @@ contract ProxyActions {
         address      usr = address(govActions);
         bytes32      tag;  assembly { tag := extcodehash(usr) }
         bytes memory fax = abi.encodeWithSignature("rely(address,address)", from, to);
-        uint         eta = now;
+        uint         eta = block.timestamp;
 
         pause.plot(usr, tag, fax, eta);
         pause.exec(usr, tag, fax, eta);
@@ -86,7 +86,7 @@ contract ProxyActions {
         address      usr = address(govActions);
         bytes32      tag;  assembly { tag := extcodehash(usr) }
         bytes memory fax = abi.encodeWithSignature("file(address,bytes32,bytes32,uint256)", who, ilk, what, data);
-        uint         eta = now;
+        uint         eta = block.timestamp;
 
         pause.plot(usr, tag, fax, eta);
         pause.exec(usr, tag, fax, eta);
@@ -96,7 +96,7 @@ contract ProxyActions {
         address      usr = address(govActions);
         bytes32      tag;  assembly { tag := extcodehash(usr) }
         bytes memory fax = abi.encodeWithSignature("file(address,bytes32,bytes32,address)", who, ilk, what, data);
-        uint         eta = now;
+        uint         eta = block.timestamp;
 
         pause.plot(usr, tag, fax, eta);
         pause.exec(usr, tag, fax, eta);
@@ -240,7 +240,7 @@ contract Test is DSTest, Math, ProxyActions {
 
         // -- deploy tinlake --
 
-        root = new TinlakeRoot(address(this));
+        root = new TinlakeRoot(address(this), address(this));
 
         lenderDeployer = new MKRLenderDeployer(
             address(root),
@@ -252,8 +252,9 @@ contract Test is DSTest, Math, ProxyActions {
             address(new AssessorFab()),
             address(new CoordinatorFab()),
             address(new OperatorFab()),
-            address(new AssessorAdminFab()),
-            address(new ClerkFab())
+            address(new PoolAdminFab()),
+            address(new ClerkFab()),
+            address(this)
         );
 
         // values set according to config.sol
@@ -273,7 +274,7 @@ contract Test is DSTest, Math, ProxyActions {
         lenderDeployer.deploySenior();
         lenderDeployer.deployReserve();
         lenderDeployer.deployAssessor();
-        lenderDeployer.deployAssessorAdmin();
+        lenderDeployer.deployPoolAdmin();
         lenderDeployer.deployCoordinator();
         lenderDeployer.deployClerk();
 
@@ -339,7 +340,14 @@ contract Test is DSTest, Math, ProxyActions {
 
         pile = Pile(borrowerDeployer.pile());
 
-        root.prepare(address(lenderDeployer), address(borrowerDeployer), address(this));
+        address[] memory poolAdmins = new address[](1);
+        poolAdmins[0] = address(this);
+        root.prepare(
+            address(lenderDeployer),
+            address(borrowerDeployer),
+            address(this),
+            poolAdmins
+        );
         root.deploy();
 
         // -- create borrower user --

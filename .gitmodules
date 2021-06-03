@@ -6,7 +6,7 @@
 	url = https://github.com/centrifuge/tinlake.git
 [submodule "lib/dss-deploy"]
 	path = lib/dss-deploy
-	url = https://github.com/makerdao/dss-deploy.git
+	url = https://github.com/dapp-org/dss-deploy.git
 [submodule "lib/tinlake-maker-lib"]
 	path = lib/tinlake-maker-lib
 	url = https://github.com/dapp-org/tinlake-maker-lib.git
