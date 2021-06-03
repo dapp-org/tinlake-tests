@@ -16,7 +16,7 @@ import {ReserveFab, Reserve} from "tinlake/lender/fabs/reserve.sol";
 import {AssessorFab, Assessor} from "tinlake/lender/fabs/assessor.sol";
 import {CoordinatorFab, EpochCoordinator} from "tinlake/lender/fabs/coordinator.sol";
 import {OperatorFab} from "tinlake/lender/fabs/operator.sol";
-import {ClerkFab} from "tinlake/lender/adapters/mkr/fabs/clerk.sol";
+import {ClerkFab, Clerk} from "tinlake/lender/adapters/mkr/fabs/clerk.sol";
 import {PoolAdminFab} from "tinlake/lender/fabs/pooladmin.sol";
 import {MKRLenderDeployer} from "tinlake/lender/adapters/mkr/deployer.sol";
 
@@ -119,6 +119,7 @@ contract Test is DSTest, Math, ProxyActions {
     address dai;
     Dai drop;
     Dai tin;
+    Clerk clerk;
 
     Title public collateralNFT = new Title("Collateral NFT", "collateralNFT");
 
@@ -197,6 +198,20 @@ contract Test is DSTest, Math, ProxyActions {
             bytes32(uint(1))
         );
 
+        // make the test contract a ward of vat.
+        hevm.store(
+            address(dssDeploy.vat()),
+            keccak256(abi.encode(address(this), uint256(0))),
+            bytes32(uint(1))
+        );
+
+        // make the test contract a ward of jug.
+        hevm.store(
+            address(dssDeploy.jug()),
+            keccak256(abi.encode(address(this), uint256(0))),
+            bytes32(uint(1))
+        );
+
         // -- prepare the proxy actions (see DssDeploy.base.t.sol) --
 
         pause = dssDeploy.pause();
@@ -226,6 +241,13 @@ contract Test is DSTest, Math, ProxyActions {
         );
         this.rely(address(dssDeploy.vat()), address(oracle));
         (,address pip,,) = oracle.ilks(ilk);
+
+        dssDeploy.vat().init(ilk);
+        dssDeploy.vat().file("Line", type(uint).max);
+        dssDeploy.vat().file(ilk, "line", type(uint).max);
+        dssDeploy.jug().init(ilk);
+        dssDeploy.jug().file("base", ONE);
+        dssDeploy.jug().file(ilk, "duty", 0); // no interest rn
 
         // integrate rwa oracle with dss spotter
         // TODO: why?
@@ -278,6 +300,8 @@ contract Test is DSTest, Math, ProxyActions {
         lenderDeployer.deployCoordinator();
         lenderDeployer.deployClerk();
 
+        clerk = Clerk(lenderDeployer.clerk());
+
         // create tinlake manager
         mgr = new TinlakeManager(
             address(dssDeploy.dai()),
@@ -303,6 +327,8 @@ contract Test is DSTest, Math, ProxyActions {
 
         mgr.file("urn", address(urn));
         mgr.file("liq", address(oracle));
+        rwa.transfer(address(mgr), 1 ether);
+        mgr.lock(1 ether);
 
         lenderDeployer.initMKR(
             address(mgr),
@@ -350,6 +376,9 @@ contract Test is DSTest, Math, ProxyActions {
         );
         root.deploy();
 
+        root.relyContract(address(reserve), address(this));
+        root.relyContract(address(clerk),   address(this));
+        mgr.rely(address(clerk));
         // -- create borrower user --
 
         borrower = new Borrower(borrowerDeployer.shelf(),
@@ -396,63 +425,135 @@ contract Test is DSTest, Math, ProxyActions {
         root.relyContract(address(srMemberList), address(this));
         root.relyContract(address(jrMemberList), address(this));
         KYC(address(seniorInvestorA));
+        KYC(address(seniorInvestorB));
         KYC(address(juniorInvestorA));
     }
 
     function testInvestmentsReturns(uint128 amount) public {
+        if (amount == 0) return;
         if (amount * 1 ether > assessor.maxReserve()) return;
-          investBothTranches(amount * 1 ether);
-          // close epoch
-          hevm.warp(block.timestamp + 1 days);
-          coordinator.closeEpoch();
+        investBothTranchesProportionally(amount * 1 ether - 1);
 
-          // 1 wei can be lost due to rounding errs.
-          uint available = reserve.currencyAvailable();
-          // borrow all of it
-          borrower.borrowAction(loan, available);
-          // accumulate debt
-          hevm.warp(block.timestamp + 1 days);
-          // interest is 5% a DAY!
-          uint debt = pile.debt(loan);
+        uint available = reserve.currencyAvailable();
+        // borrow as much as we can
+        borrower.borrowAction(loan, available);
+        // accumulate debt
+        hevm.warp(block.timestamp + 1 days);
+        // interest is 5% a DAY!
+        uint debt = pile.debt(loan);
 
-          // give borrower some dai so they can repay
-          Dai(dai).mint(address(borrower), debt - available);
-          borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
-          borrower.repayAction(loan, debt);
+        // give borrower some dai so they can repay
+        Dai(dai).mint(address(borrower), debt - available);
+        borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
+        borrower.repayAction(loan, debt);
 
-          // investor exits
-          seniorInvestorA.disburse();
-          juniorInvestorA.disburse();
+        // Due to rounding errors the investors cannot redeem completely
+        seniorInvestorA.redeemOrder(99999999 * drop.balanceOf(address(seniorInvestorA)) / 100000000);
+        juniorInvestorA.redeemOrder(99999999 *  tin.balanceOf(address(juniorInvestorA)) / 100000000);
 
-          // TODO: why can they not redeem completely? (coordinator won't execute epoch directly)
-          seniorInvestorA.redeemOrder(99999999 * drop.balanceOf(address(seniorInvestorA)) / 100000000);
-          juniorInvestorA.redeemOrder(99999999 *  tin.balanceOf(address(juniorInvestorA)) / 100000000);
+        hevm.warp(block.timestamp + 1 days);
 
-          hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+        assertTrue(!coordinator.submissionPeriod());
 
-          coordinator.closeEpoch();
-          assertTrue(!coordinator.submissionPeriod());
+        seniorInvestorA.disburse();
 
-          seniorInvestorA.disburse();
+        juniorInvestorA.disburse();
 
-          juniorInvestorA.disburse();
+        // senior investor returns
+        uint got = Dai(dai).balanceOf(address(seniorInvestorA));
+        log_named_uint("sr investor A put in    ", rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO));
+        uint expected = rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO) * 102 / 100;
+        log_named_uint("with 2% interest, expect", expected);
+        log_named_uint("amount received:        ", got);
 
-          // senior investor returns
-          uint got = Dai(dai).balanceOf(address(seniorInvestorA));
-          log_named_uint("sr investor A put in    ", rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO));
-          uint expected = rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO) * 102 / 100;
-          log_named_uint("with 2% interest, expect", expected);
-          log_named_uint("amount received:        ", got);
+        // junior investor returns
+        uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
+        log_named_uint("jr investor A put in    ", rmul(amount * 1 ether, DEFAULT_JUNIOR_RATIO));
+        uint expectedjr = debt - got;
+        log_named_uint("remainder after drop payout", expectedjr);
+        log_named_uint("amount received:        ", jrgot);
 
-          // junior investor returns
-          uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
-          log_named_uint("jr investor A put in    ", rmul(amount * 1 ether, DEFAULT_JUNIOR_RATIO));
-          uint expectedjr = debt - got;
-          log_named_uint("remainder after drop payout", expectedjr);
-          log_named_uint("amount received:        ", jrgot);
+        assertLe(got - expected, 1 ether);
+        assertLe(expectedjr - jrgot, 1 ether);
+    }
 
-          assertLe(got - expected, 1 ether);
-          assertLe(expectedjr - jrgot, 1 ether);
+
+    // this test succeeds
+    function testReasonableNumbers() public {
+        testInvestmentsReturnsWithClerk(1);
+    }
+
+    // this test fails; the jr receives 2 dai less than expected,
+    // higher than our tolerance threshold
+    function testUnreasonableNumbers() public {
+        testInvestmentsReturnsWithClerk(27);
+    }
+
+
+    function testInvestmentsReturnsWithClerk(uint128 amount) public {
+        if (amount == 0) return;
+        if (amount * 1 ether > assessor.maxReserve()) return;
+        // install mkr adapters
+        reserve.depend("lending", address(clerk));
+
+        investBothTranchesProportionally(amount * 1 ether);
+
+        uint availablePre = reserve.currencyAvailable();
+        log_named_uint("currencyAvail:", availablePre);
+
+        // increase the ceiling
+        uint allowedIncrease = rmul(feed.currentNAV() + reserve.totalBalance(), 0.1 *10**27);
+        clerk.raise(allowedIncrease);
+        assessor.dripSeniorDebt();
+
+        uint availablePost = reserve.currencyAvailable();
+
+        assertLe(availablePre, availablePost);
+        assertEq(availablePost - availablePre, allowedIncrease);
+
+        // borrow everything available
+        borrower.borrowAction(loan, availablePost);
+        // accumulate debt
+        hevm.warp(block.timestamp + 1 days);
+        // interest is 5% a DAY!
+        uint debt = pile.debt(loan);
+
+        // give borrower some dai so they can repay
+        Dai(dai).mint(address(borrower), debt - availablePost);
+        borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
+        borrower.repayAction(loan, debt);
+
+        // now we can unwind mkr position
+        clerk.sink(allowedIncrease);
+
+        // canont redeem completely due to rounding errors
+        seniorInvestorA.redeemOrder(99999999 * drop.balanceOf(address(seniorInvestorA)) / 100000000);
+        juniorInvestorA.redeemOrder(99999999 *  tin.balanceOf(address(juniorInvestorA)) / 100000000);
+
+        hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+        assertTrue(!coordinator.submissionPeriod());
+
+        seniorInvestorA.disburse();
+        juniorInvestorA.disburse();
+
+        // senior investor returns
+        uint got = Dai(dai).balanceOf(address(seniorInvestorA));
+        log_named_uint("sr investor A put in    ", rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO));
+        uint expected = rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO) * 102 / 100;
+        log_named_uint("with 2% interest, expect", expected);
+        log_named_uint("amount received:        ", got);
+
+        // junior investor returns
+        uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
+        log_named_uint("jr investor A put in       ", rmul(amount * 1 ether, DEFAULT_JUNIOR_RATIO));
+        uint expectedjr = debt - got;
+        log_named_uint("remainder after drop payout", expectedjr);
+        log_named_uint("amount received:           ", jrgot);
+
+        assertLe(got - expected, 1 ether);
+        assertLe(expectedjr - jrgot, 1 ether);
     }
 
 
@@ -475,15 +576,29 @@ contract Test is DSTest, Math, ProxyActions {
         srMemberList.updateMember(usr, validUntil);
     }
 
-    function investBothTranches(uint currencyAmount) public {
-        uint amountSenior = rmul(currencyAmount, DEFAULT_SENIOR_RATIO);
-        uint amountJunior = rmul(currencyAmount, DEFAULT_JUNIOR_RATIO);
+    function investBothTranchesProportionally(uint amount) public {
+        uint amountSenior = rmul(amount, DEFAULT_SENIOR_RATIO);
+        uint amountJunior = rmul(amount, DEFAULT_JUNIOR_RATIO);
 
         Dai(dai).mint(address(seniorInvestorA), amountSenior);
         Dai(dai).mint(address(juniorInvestorA), amountJunior);
 
         seniorInvestorA.supplyOrder(amountSenior);
         juniorInvestorA.supplyOrder(amountJunior);
+        // close epoch and disburse
+        hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+
+        // we have approximately `amount` available for lending now
+        uint available = reserve.currencyAvailable();
+        assertLe(available, amount);
+
+        // the precision loss should not be larger than a cent
+        assertLt(amount - available, 0.01 ether);
+
+        seniorInvestorA.disburse();
+        juniorInvestorA.disburse();
+
     }
 }
 
