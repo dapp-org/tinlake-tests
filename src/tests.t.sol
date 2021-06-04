@@ -431,23 +431,32 @@ contract Test is DSTest, Math, ProxyActions {
         KYC(address(juniorInvestorA));
     }
 
-    function testInvestmentsReturns(uint128 amount) public {
+    function testInvestmentsReturnsNormal(uint amount, uint loanAmt_) public {
+        amount *= 1 ether;
+        uint loanAmt  = min(amount,  loanAmt_ * 1 ether);
         if (amount == 0) return;
-        if (amount * 1 ether > assessor.maxReserve()) return;
-        investBothTranchesProportionally(amount * 1 ether - 1);
-
-        uint available = reserve.currencyAvailable();
+        if (amount > assessor.maxReserve()) return;
+        investBothTranchesProportionally(amount);
         // borrow as much as we can
-        borrower.borrowAction(loan, available);
+        borrower.borrowAction(loan, loanAmt);
+        uint srDebt = assessor.seniorDebt();
+        uint srBal = assessor.seniorBalance();
         // accumulate debt
         hevm.warp(block.timestamp + 1 days);
         // interest is 5% a DAY!
         uint debt = pile.debt(loan);
 
-        // give borrower some dai so they can repay
-        Dai(dai).mint(address(borrower), debt - available);
+        uint nav = feed.currentNAV();
+        log_named_uint("we took out a loan of",  loanAmt);
+        log_named_uint("leading to a NAV of  ",  nav); // nav is so much higher... maybe unrealistic figures here.
+        log_named_uint("sr debt is ",  srDebt);
+        assessor.dripSeniorDebt();
+        // give borrower some dai if they need some
+        Dai(dai).mint(address(borrower), debt - loanAmt);
         borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
-        borrower.repayAction(loan, debt);
+
+        borrower.repay(loan, debt);
+        reserve.balance();
 
         // Due to rounding errors the investors cannot redeem completely
         seniorInvestorA.redeemOrder(99999999 * drop.balanceOf(address(seniorInvestorA)) / 100000000);
@@ -464,32 +473,35 @@ contract Test is DSTest, Math, ProxyActions {
 
         // senior investor returns
         uint got = Dai(dai).balanceOf(address(seniorInvestorA));
-        log_named_uint("sr investor A put in    ", rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO));
-        uint expected = rmul(amount * 1 ether, DEFAULT_SENIOR_RATIO) * 102 / 100;
+        log_named_uint("sr investor A put in    ", rmul(amount, DEFAULT_SENIOR_RATIO));
+        uint expected = srDebt * 102 / 100 + srBal;
         log_named_uint("with 2% interest, expect", expected);
         log_named_uint("amount received:        ", got);
 
         // junior investor returns
         uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
-        log_named_uint("jr investor A put in    ", rmul(amount * 1 ether, DEFAULT_JUNIOR_RATIO));
-        uint expectedjr = debt - got;
+        log_named_uint("jr investor A put in    ", rmul(amount, DEFAULT_JUNIOR_RATIO));
+        uint expectedjr = debt - loanAmt - (got - rmul(amount, DEFAULT_SENIOR_RATIO)) + rmul(amount, DEFAULT_JUNIOR_RATIO);
         log_named_uint("remainder after drop payout", expectedjr);
         log_named_uint("amount received:        ", jrgot);
 
-        assertLe(got - expected, 1 ether);
-        assertLe(expectedjr - jrgot, 1 ether);
+        // diffs
+        uint srDiff = got > expected ? got - expected : expected - got;
+        uint jrDiff = jrgot > expectedjr ? jrgot - expectedjr : expectedjr - jrgot;
+        assertLe(srDiff, 1 ether);
+        assertLe(jrDiff, 1 ether);
     }
 
 
     // this test succeeds
-    function testReasonableNumbers() public {
-        testInvestmentsReturnsWithClerk(1);
-    }
+    /* function testReasonableNumbers() public { */
+    /*     testInvestmentsReturnsWithClerk(1, 1.2); */
+    /* } */
 
     // this test fails; the jr receives 2 dai less than expected,
     // higher than our tolerance threshold
     function testUnreasonableNumbers() public {
-        testInvestmentsReturnsWithClerk(27);
+        testInvestmentsReturnsWithClerk(20);
     }
 
 
@@ -642,7 +654,6 @@ contract Test is DSTest, Math, ProxyActions {
 
     }
 
-
     function uint2str(uint _i) internal pure returns (string memory _uintAsString) {
           if (_i == 0) {
               return "0";
@@ -671,6 +682,10 @@ contract Test is DSTest, Math, ProxyActions {
         out |= bytes32(b[offset + i] & 0xFF) >> (i * 8);
       }
       return out;
+
+    function min(uint x, uint y) internal returns (uint) {
+        if (x < y) return x;
+        return y;
     }
 }
 
