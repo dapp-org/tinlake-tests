@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+pragma experimental ABIEncoderV2;
 pragma solidity ^0.7.6;
 
 import {DSTest} from "ds-test/test.sol";
@@ -65,6 +66,7 @@ interface Hevm {
     function store(address,bytes32,bytes32) external;
     function sign(uint,bytes32) external returns (uint8,bytes32,bytes32);
     function addr(uint) external returns (address);
+    function ffi(string[] calldata) external returns (bytes memory);
 }
 
 // helpers to deal with ds-pause related beuracracy
@@ -556,6 +558,45 @@ contract Test is DSTest, Math, ProxyActions {
         assertLe(expectedjr - jrgot, 1 ether);
     }
 
+    function testSolver() public {
+        string memory dropInvest    = uint2str(6000000000000000000);
+        string memory dropRedeem    = uint2str(0);
+        string memory tinInvest     = uint2str(6000000000000000000);
+        string memory tinRedeem     = uint2str(0);
+        string memory netAssetValue = uint2str(990000000000000000000);
+        string memory reserve       = uint2str(10000000000000000000);
+        string memory seniorAsset   = uint2str(800000000000000000000);
+        string memory minDropRatio  = uint2str(700000000000000000000000000);
+        string memory maxDropRatio  = uint2str(850000000000000000000000000);
+        string memory maxReserve    = uint2str(20000000000000000000);     
+
+        string[] memory inputs = new string[](12);
+        inputs[0] = "node";
+        inputs[1] = "lib/solver/index.js";
+        inputs[2] = dropInvest;
+        inputs[3] = dropRedeem;
+        inputs[4] = tinInvest;
+        inputs[5] = tinRedeem;
+        inputs[6] = netAssetValue;
+        inputs[7] = reserve;
+        inputs[8] = seniorAsset;
+        inputs[9] = minDropRatio;
+        inputs[10] = maxDropRatio;
+        inputs[11] = maxReserve;
+        bytes memory ret = hevm.ffi(inputs);
+        bool isFeasible;
+        uint dropInvest_;
+        uint dropRedeem_;
+        uint tinInvest_;
+        uint tinRedeem_;
+        (isFeasible, dropInvest_, dropRedeem_, tinInvest_, tinRedeem_) = abi.decode(ret, (bool,uint,uint,uint,uint));
+        assertTrue(isFeasible);
+        assertEq(dropInvest_, 4000000000000000000);
+        assertEq(dropRedeem_, 0);
+        assertEq(tinInvest_, 6000000000000000000);
+        assertEq(tinRedeem_, 0);
+    }
+
 
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
         uint maturityDate = 600 days;
@@ -599,6 +640,37 @@ contract Test is DSTest, Math, ProxyActions {
         seniorInvestorA.disburse();
         juniorInvestorA.disburse();
 
+    }
+
+
+    function uint2str(uint _i) internal pure returns (string memory _uintAsString) {
+          if (_i == 0) {
+              return "0";
+          }
+          uint j = _i;
+          uint len;
+          while (j != 0) {
+              len++;
+              j /= 10;
+          }
+          bytes memory bstr = new bytes(len);
+          uint k = len;
+          while (_i != 0) {
+              k = k-1;
+              uint8 temp = (48 + uint8(_i - _i / 10 * 10));
+              bytes1 b1 = bytes1(temp);
+              bstr[k] = b1;
+              _i /= 10;
+          }
+          return string(bstr);
+      }
+    function bytesToBytes32(bytes memory b, uint offset) private pure returns (bytes32) {
+      bytes32 out;
+
+      for (uint i = 0; i < 32; i++) {
+        out |= bytes32(b[offset + i] & 0xFF) >> (i * 8);
+      }
+      return out;
     }
 }
 
