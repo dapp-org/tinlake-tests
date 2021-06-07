@@ -580,7 +580,7 @@ contract Test is DSTest, Math, ProxyActions {
         string memory seniorAsset   = uint2str(800000000000000000000);
         string memory minDropRatio  = uint2str(700000000000000000000000000);
         string memory maxDropRatio  = uint2str(850000000000000000000000000);
-        string memory maxReserve    = uint2str(20000000000000000000);     
+        string memory maxReserve    = uint2str(20000000000000000000);
 
         string[] memory inputs = new string[](12);
         inputs[0] = "node";
@@ -595,13 +595,9 @@ contract Test is DSTest, Math, ProxyActions {
         inputs[9] = minDropRatio;
         inputs[10] = maxDropRatio;
         inputs[11] = maxReserve;
+
         bytes memory ret = hevm.ffi(inputs);
-        bool isFeasible;
-        uint dropInvest_;
-        uint dropRedeem_;
-        uint tinInvest_;
-        uint tinRedeem_;
-        (isFeasible, dropInvest_, dropRedeem_, tinInvest_, tinRedeem_) = abi.decode(ret, (bool,uint,uint,uint,uint));
+        (bool isFeasible, uint dropInvest_, uint dropRedeem_, uint tinInvest_, uint tinRedeem_) = abi.decode(ret, (bool,uint,uint,uint,uint));
         assertTrue(isFeasible);
         assertEq(dropInvest_, 4000000000000000000);
         assertEq(dropRedeem_, 0);
