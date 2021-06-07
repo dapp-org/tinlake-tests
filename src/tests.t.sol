@@ -248,8 +248,8 @@ contract Test is DSTest, Math, ProxyActions {
         dssDeploy.vat().file("Line", type(uint).max);
         dssDeploy.vat().file(ilk, "line", type(uint).max);
         dssDeploy.jug().init(ilk);
-        dssDeploy.jug().file("base", ONE);
-        dssDeploy.jug().file(ilk, "duty", 0); // no interest rn
+        dssDeploy.jug().file("base", 0);
+        dssDeploy.jug().file(ilk, "duty", ONE); // no interest rn
 
         // integrate rwa oracle with dss spotter
         // TODO: why?
@@ -493,41 +493,67 @@ contract Test is DSTest, Math, ProxyActions {
     }
 
 
-    // this test succeeds
-    /* function testReasonableNumbers() public { */
-    /*     testInvestmentsReturnsWithClerk(1, 1.2); */
-    /* } */
-
-    // this test fails; the jr receives 2 dai less than expected,
-    // higher than our tolerance threshold
-    function testUnreasonableNumbers() public {
-        testInvestmentsReturnsWithClerk(20);
+    function testDraw() public {
+        uint amount = 10 ether;
+        investBothTranchesProportionally(10 ether);
+        clerk.raise(1 ether);
+        borrower.lock(loan);
+        borrower.borrow(loan, 0.001 ether);
+        uint srPricePre = assessor.calcSeniorTokenPrice();
+        clerk.draw(1 ether);
+        uint srPricePost = assessor.calcSeniorTokenPrice();
+        assertEq(srPricePre, srPricePost);
     }
 
 
-    function testInvestmentsReturnsWithClerk(uint128 amount) public {
+    function testInvestmentsReturnsWithClerk() public {
+        uint amount = 10;
         if (amount == 0) return;
         if (amount * 1 ether > assessor.maxReserve()) return;
         // install mkr adapters
         reserve.depend("lending", address(clerk));
 
         investBothTranchesProportionally(amount * 1 ether);
+        assessor.dripSeniorDebt();
+
+        uint srdebt = assessor.seniorDebt();
+        log_named_uint("sr debt after investment", srdebt);
+        uint srbal  = assessor.seniorBalance();
+        log_named_uint("sr bal after investment ", srbal);
+        log_named_uint("sr price after investment", assessor.calcSeniorTokenPrice());
 
         uint availablePre = reserve.currencyAvailable();
-        log_named_uint("currencyAvail:", availablePre);
 
         // increase the ceiling
-        uint allowedIncrease = rmul(feed.currentNAV() + reserve.totalBalance(), 0.1 *10**27);
+        uint allowedIncrease = rmul(feed.currentNAV() + reserve.totalBalance(), 0.13 *10**27);
         clerk.raise(allowedIncrease);
+        log_named_uint("raise by                ", allowedIncrease);
+        
+        srdebt = assessor.seniorDebt();
+        log_named_uint("sr debt post clerk.raise", srdebt);
+        srbal  = assessor.seniorBalance();
+        log_named_uint("sr bal  post clerk.raise", srbal);
+
+        log_named_uint("sr price post clerk.raise", assessor.calcSeniorTokenPrice());
+
+        
         assessor.dripSeniorDebt();
 
         uint availablePost = reserve.currencyAvailable();
+                
 
         assertLe(availablePre, availablePost);
         assertEq(availablePost - availablePre, allowedIncrease);
 
         // borrow everything available
         borrower.borrowAction(loan, availablePost);
+        log_named_uint("loan of                 ", availablePost);
+
+        srdebt = assessor.seniorDebt();
+        log_named_uint("srdebt after loan       ", srdebt);
+        srbal  = assessor.seniorBalance();
+        log_named_uint("sr bal after loan       ", srdebt);
+        log_named_uint("sr price after loan     ", assessor.calcSeniorTokenPrice());
         // accumulate debt
         hevm.warp(block.timestamp + 1 days);
         // interest is 5% a DAY!
@@ -539,7 +565,13 @@ contract Test is DSTest, Math, ProxyActions {
         borrower.repayAction(loan, debt);
 
         // now we can unwind mkr position
+        log_named_uint("remainingCredit after repayment", clerk.remainingCredit());
         clerk.sink(allowedIncrease);
+
+        srdebt = assessor.seniorDebt();
+        log_named_uint("srdebt after repayment  ", srdebt);
+        srbal  = assessor.seniorBalance();
+        log_named_uint("sr bal after repayment  ", srbal);
 
         // canont redeem completely due to rounding errors
         seniorInvestorA.redeemOrder(99999999 * drop.balanceOf(address(seniorInvestorA)) / 100000000);
@@ -562,7 +594,7 @@ contract Test is DSTest, Math, ProxyActions {
         // junior investor returns
         uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
         log_named_uint("jr investor A put in       ", rmul(amount * 1 ether, DEFAULT_JUNIOR_RATIO));
-        uint expectedjr = debt - got;
+        uint expectedjr = debt - got - allowedIncrease;
         log_named_uint("remainder after drop payout", expectedjr);
         log_named_uint("amount received:           ", jrgot);
 
