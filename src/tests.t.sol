@@ -682,6 +682,7 @@ contract Test is DSTest, Math, ProxyActions {
         out |= bytes32(b[offset + i] & 0xFF) >> (i * 8);
       }
       return out;
+    }
 
     function min(uint x, uint y) internal returns (uint) {
         if (x < y) return x;
