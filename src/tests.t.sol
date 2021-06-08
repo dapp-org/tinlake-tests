@@ -528,7 +528,7 @@ contract Test is DSTest, Math, ProxyActions {
         uint allowedIncrease = rmul(feed.currentNAV() + reserve.totalBalance(), 0.13 *10**27);
         clerk.raise(allowedIncrease);
         log_named_uint("raise by                ", allowedIncrease);
-        
+
         srdebt = assessor.seniorDebt();
         log_named_uint("sr debt post clerk.raise", srdebt);
         srbal  = assessor.seniorBalance();
@@ -536,11 +536,11 @@ contract Test is DSTest, Math, ProxyActions {
 
         log_named_uint("sr price post clerk.raise", assessor.calcSeniorTokenPrice());
 
-        
+
         assessor.dripSeniorDebt();
 
         uint availablePost = reserve.currencyAvailable();
-                
+
 
         assertLe(availablePre, availablePost);
         assertEq(availablePost - availablePre, allowedIncrease);
@@ -637,6 +637,87 @@ contract Test is DSTest, Math, ProxyActions {
         assertEq(tinRedeem_, 0);
     }
 
+    // it is a lemma that:
+    //   (drop.totalSupply() * dropPrice) + (tin.totalSupply * tinPrice) <= reserve.totalBalance() + NAV
+    //
+    // where:
+    //   dropPrice == seniorAssets / drop.tokenSupply()
+    //   tinPrice == (total assets - seniorAssets + junior stake) / tin.totalSupply()
+    //   seniorAssets = senior debt + senior balance
+    //
+    // here we attempt to break the above lemma by finding cases where rdiv rounds up during token price calculation.
+    function testTokenPriceRounding(uint128 supplyAmt) public {
+        if (supplyAmt > assessor.maxReserve()) return;
+
+        uint supplyAmt = 1000000 ether;
+        uint loanAmt = rmul(supplyAmt, 0.9 ether * (10 ^ 9));
+        log_named_uint("supplyAmt", supplyAmt);
+        log_named_uint("loan", loanAmt);
+
+        // supply some monies
+        uint amountSenior = rmul(supplyAmt, DEFAULT_SENIOR_RATIO);
+        uint amountSeniorA = amountSenior / 2;
+        uint amountSeniorB = amountSenior - amountSeniorA;
+        uint amountJunior = supplyAmt - amountSenior;
+
+        Dai(dai).mint(address(seniorInvestorA), amountSeniorA);
+        Dai(dai).mint(address(seniorInvestorB), amountSeniorB);
+        Dai(dai).mint(address(juniorInvestorA), amountJunior);
+
+        seniorInvestorA.supplyOrder(amountSeniorA);
+        seniorInvestorB.supplyOrder(amountSeniorB);
+        juniorInvestorA.supplyOrder(amountJunior);
+
+        // close epoch and disburse
+        hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+
+        seniorInvestorA.disburse();
+        seniorInvestorB.disburse();
+        juniorInvestorA.disburse();
+
+        // borrow some monies
+        borrower.borrowAction(loan, loanAmt);
+
+        // accumulate some interest
+        hevm.warp(block.timestamp + 100 days);
+
+        // seniorTokenPrice should be:
+        // seniorDebt + seniorBalance / totalSupply
+        uint srDebt = assessor.seniorDebt();
+        uint srBal = assessor.seniorBalance();
+        uint dropSupply = Tranche(lenderDeployer.seniorTranche()).tokenSupply();
+
+        uint downPrice = safeMul(safeAdd(srDebt, srBal), ONE) / dropSupply;
+        uint rdivPrice = assessor.calcSeniorTokenPrice();
+
+        log_named_uint("seniorDebt", srDebt);
+        log_named_uint("seniorBalance", srBal);
+        log_named_uint("DROP Supply", dropSupply);
+
+        log_named_uint("rounded down", downPrice);
+        log_named_uint("with rdiv", rdivPrice);
+
+        // repay the loan
+        uint debt = pile.debt(loan);
+        Dai(dai).mint(address(borrower), debt);
+        borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
+        borrower.repayAction(loan, debt);
+
+        uint aExpects = rmul(drop.balanceOf(address(seniorInvestorA)), rdivPrice);
+        uint bExpects = rmul(drop.balanceOf(address(seniorInvestorB)), rdivPrice);
+        uint jrExpects = rmul(tin.balanceOf(address(juniorInvestorA)), assessor.calcJuniorTokenPrice());
+
+        log_named_uint("investor A expects", aExpects);
+        log_named_uint("investor B expects", bExpects);
+        log_named_uint("jr investor expects", jrExpects);
+        log_named_uint("reserve balance", reserve.totalBalance());
+        log_named_uint("required for all sr", aExpects + bExpects);
+        log_named_uint("required for all", aExpects + bExpects + jrExpects);
+        log_named_uint("seniorBalancePost", assessor.seniorBalance());
+
+        assertGe(reserve.totalBalance(), aExpects + bExpects + jrExpects, "not enough Dai for senior investors");
+    }
 
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
         uint maturityDate = 600 days;
