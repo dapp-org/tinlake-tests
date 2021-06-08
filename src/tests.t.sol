@@ -10,7 +10,7 @@ import {LenderDeployer} from "tinlake/lender/deployer.sol";
 import {BorrowerDeployer} from "tinlake/borrower/deployer.sol";
 import {TinlakeManager} from "tinlake-maker-lib/mgr.sol";
 
-import {TrancheFab} from "tinlake/lender/fabs/tranche.sol";
+import {TrancheFab, Tranche} from "tinlake/lender/fabs/tranche.sol";
 import {MemberlistFab, Memberlist} from "tinlake/lender/fabs/memberlist.sol";
 import {RestrictedTokenFab} from "tinlake/lender/fabs/restrictedtoken.sol";
 import {ReserveFab, Reserve} from "tinlake/lender/fabs/reserve.sol";
