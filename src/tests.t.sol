@@ -391,6 +391,16 @@ contract Test is DSTest, Math, ProxyActions {
         // set up and price the nft collateral
         uint tokenId = collateralNFT.issue(address(borrower));
         feed = NAVFeed(borrowerDeployer.feed());
+
+        // new risk type with sane NAV value
+        feed.file("riskGroup",
+            5,
+            8*10**26,
+            10*10**26,
+            uint(1000000315936290433356735830),
+            ONE
+        );
+
         priceNFTandSetRisk(tokenId, DEFAULT_NFT_PRICE, DEFAULT_RISK_GROUP_TEST_LOANS);
 
         // enable it for loans
@@ -448,7 +458,7 @@ contract Test is DSTest, Math, ProxyActions {
 
         uint nav = feed.currentNAV();
         log_named_uint("we took out a loan of",  loanAmt);
-        log_named_uint("leading to a NAV of  ",  nav); // nav is so much higher... maybe unrealistic figures here.
+        log_named_uint("leading to a NAV of  ",  assessor.getNAV());
         log_named_uint("sr debt is ",  srDebt);
         assessor.dripSeniorDebt();
         // give borrower some dai if they need some
@@ -528,6 +538,7 @@ contract Test is DSTest, Math, ProxyActions {
         uint allowedIncrease = rmul(feed.currentNAV() + reserve.totalBalance(), 0.13 *10**27);
         clerk.raise(allowedIncrease);
         log_named_uint("raise by                ", allowedIncrease);
+        log_named_uint("sr ratio is             ", assessor.seniorRatio());
 
         srdebt = assessor.seniorDebt();
         log_named_uint("sr debt post clerk.raise", srdebt);
@@ -547,8 +558,11 @@ contract Test is DSTest, Math, ProxyActions {
 
         // borrow everything available
         borrower.borrowAction(loan, availablePost);
-        log_named_uint("loan of                 ", availablePost);
 
+        log_named_uint("loan of                 ", availablePost);
+        log_named_uint("leading to a NAV of     ", assessor.getNAV());
+        log_named_uint("sr ratio is             ", assessor.seniorRatio());
+        assertEq(assessor.seniorRatio(), DEFAULT_SENIOR_RATIO); // the loan shouldn't change the sr ratio
         srdebt = assessor.seniorDebt();
         log_named_uint("srdebt after loan       ", srdebt);
         srbal  = assessor.seniorBalance();
