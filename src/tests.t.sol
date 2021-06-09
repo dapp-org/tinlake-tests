@@ -899,6 +899,102 @@ contract Test is DSTest, Math, ProxyActions {
         log_named_uint("postredeem: reserve.totalBalanceAvailable()", reserve.totalBalanceAvailable());
     }
 
+    // what happens when maker decides to liquidate the pool?
+    function testMakerLiquidation() public {
+        // install mkr adapter
+        reserve.depend("lending", address(clerk));
+
+        // allow an all TIN pool
+        root.relyContract(address(assessor), address(this));
+        assessor.file("minSeniorRatio", 0);
+
+        // invest TIN
+        uint amountJunior = 100;
+        Dai(dai).mint(address(juniorInvestorA), amountJunior);
+        juniorInvestorA.supplyOrder(amountJunior);
+        hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+        juniorInvestorA.disburse();
+
+        // increase maker credtline
+        clerk.raise(150);
+
+        // borrow
+        borrower.borrowAction(loan, 250);
+
+        // maker gov liquidates
+        this.file(address(dssDeploy.vat()), ilk, "line", 0);
+        oracle.tell(ilk);
+
+        // trigger a soft liquidation in the manager
+        uint mgrDrop = drop.balanceOf(address(mgr));
+        log_named_uint("mgrDrop", mgrDrop);
+        mgr.tell();
+
+        // redeem order has been submitted
+        Tranche senior = Tranche(lenderDeployer.seniorTranche());
+        (uint orderdInEpoch, uint supplyAmt, uint redeemAmt) = senior.users(address(mgr));
+        assertEq(orderdInEpoch, coordinator.currentEpoch());
+        assertEq(redeemAmt, mgrDrop);
+        assertEq(supplyAmt, 0);
+
+        // close the epoch :)
+        hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+
+        // we cannot fulfill all orders, so we enter a submissionPeriod
+        assertTrue(coordinator.submissionPeriod());
+        solveEpoch();
+    }
+
+    function solveEpoch() public {
+        Tranche senior = Tranche(lenderDeployer.seniorTranche());
+        Tranche junior = Tranche(lenderDeployer.juniorTranche());
+
+        string memory dropInvest    = uint2str(senior.totalSupply());
+        string memory dropRedeem    = uint2str(senior.totalRedeem());
+        string memory tinInvest     = uint2str(junior.totalSupply());
+        string memory tinRedeem     = uint2str(junior.totalRedeem());
+        string memory netAssetValue = uint2str(feed.currentNAV());
+
+        // TODO: should this take the maker creditline into account?
+        string memory reserve       = uint2str(reserve.totalBalance());
+
+        string memory seniorAsset   = uint2str(assessor.seniorDebt_() + assessor.seniorBalance_());
+        string memory minDropRatio  = uint2str(assessor.minSeniorRatio());
+        string memory maxDropRatio  = uint2str(assessor.maxSeniorRatio());
+        string memory maxReserve    = uint2str(assessor.maxReserve());
+
+        string[] memory inputs = new string[](12);
+        inputs[0] = "node";
+        inputs[1] = "lib/solver/index.js";
+        inputs[2] = dropInvest;
+        inputs[3] = dropRedeem;
+        inputs[4] = tinInvest;
+        inputs[5] = tinRedeem;
+        inputs[6] = netAssetValue;
+        inputs[7] = reserve;
+        inputs[8] = seniorAsset;
+        inputs[9] = minDropRatio;
+        inputs[10] = maxDropRatio;
+        inputs[11] = maxReserve;
+
+        bytes memory ret = hevm.ffi(inputs);
+        (bool isFeasible, uint srSupply, uint srRedeem, uint jrSupply, uint jrRedeem) = abi.decode(ret, (bool,uint,uint,uint,uint));
+
+        require(isFeasible, "epoch has no solution");
+
+        coordinator.submitSolution(srRedeem, jrRedeem, srSupply, jrSupply);
+        assertEq(coordinator.minChallengePeriodEnd(), block.timestamp + coordinator.challengeTime(), "wrong value for challenge period");
+
+        hevm.warp(coordinator.minChallengePeriodEnd());
+
+        uint pre = coordinator.lastEpochExecuted();
+        coordinator.executeEpoch();
+        uint post = coordinator.lastEpochExecuted();
+        assertEq(post, pre + 1, "could not execute epoch");
+    }
+
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
         uint maturityDate = 600 days;
         bytes32 lookupId = keccak256(abi.encodePacked(address(collateralNFT), tokenId));
