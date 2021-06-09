@@ -229,7 +229,7 @@ contract Test is DSTest, Math, ProxyActions {
         string memory doc = "acab";
         uint48 remediationPeriod = 1 days;
         // TODO: what does this mean?
-        uint value = 400 ether;
+        uint value = DEFAULT_NFT_PRICE;
 
         oracle = new RwaLiquidationOracle(
             address(dssDeploy.vat()),
@@ -284,9 +284,9 @@ contract Test is DSTest, Math, ProxyActions {
         // values set according to config.sol
         lenderDeployer.init(
             0.75 *10**27,  // minSeniorRatio
-            0.85 *10**27,  // maxSeniorRatio
+            ONE,           // maxSeniorRatio
             1000000 ether, // maxReserve
-            1 hours,        // challengeTime
+            1 hours,       // challengeTime
             uint(1000000229200000000000000000), // seniorInterestRate (2% / day)
             "Drop",        // seniorName
             "DRP",         // seniorSymbol
@@ -900,7 +900,22 @@ contract Test is DSTest, Math, ProxyActions {
     }
 
     // what happens when maker decides to liquidate the pool?
+    // function testMakerLiquidation(uint128 amountJunior, uint128 clerkAmount, uint128 borrow) public {
+    //     if(    amountJunior + clerkAmount < borrow 
+    //         || amountJunior > assessor.maxReserve()
+    //         || clerkAmount > assessor.maxReserve()
+    //         || borrow > assessor.maxReserve()
+    //       ) {
+    //         return;
+    //     }
+    // fishy stuff
     function testMakerLiquidation() public {
+        uint128 amountJunior =    811719427047073844116;
+        uint128 clerkAmount  = 123619540332250687542738;
+        uint128 borrow       =  45208525611983979667313;
+        log_named_uint("amountJunior", amountJunior);
+        log_named_uint("clerkAmount ", clerkAmount);
+        log_named_uint("borrow      ", borrow);
         // install mkr adapter
         reserve.depend("lending", address(clerk));
 
@@ -909,18 +924,43 @@ contract Test is DSTest, Math, ProxyActions {
         assessor.file("minSeniorRatio", 0);
 
         // invest TIN
-        uint amountJunior = 100;
+        // uint amountJunior = 100 - 1;
         Dai(dai).mint(address(juniorInvestorA), amountJunior);
         juniorInvestorA.supplyOrder(amountJunior);
         hevm.warp(block.timestamp + 1 days);
         coordinator.closeEpoch();
         juniorInvestorA.disburse();
 
+        log_named_uint("nftprice         ", DEFAULT_NFT_PRICE);
+        log_named_uint("calcOvercolAmount", clerk.calcOvercollAmount(clerkAmount));
+        log_named_uint("protectionDAI    ", safeSub(clerk.calcOvercollAmount(clerkAmount), clerkAmount));
+        log_named_int ("validate         ", clerk.validate( 0
+                                                 , safeSub(clerk.calcOvercollAmount(clerkAmount), clerkAmount)
+                                                 , clerk.calcOvercollAmount(clerkAmount)
+                                                 , 0
+                                                 ));
+        log_named_uint("nav", assessor.getNAV());
+        log_named_uint("assessor.totalBalance", assessor.totalBalance());
+        log_named_uint("assessor.totalBalance", reserve.totalBalance());
+        log_named_uint("remainingCredit", assessor.remainingCredit());
+
+        uint seniorSupplyDAI = clerk.calcOvercollAmount(clerkAmount);
+        uint juniorRedeemDAI = safeSub(clerk.calcOvercollAmount(clerkAmount), clerkAmount);
+
+        uint newAssets = safeSub(safeSub(safeAdd(safeAdd(safeAdd(assessor.totalBalance(), assessor.getNAV()), seniorSupplyDAI),
+            0), juniorRedeemDAI), 0);
+        uint expectedSeniorAsset = assessor.calcExpectedSeniorAsset(0, seniorSupplyDAI,
+            assessor.seniorBalance(), assessor.seniorDebt());
+        log_named_uint("newAssets", newAssets);
+        log_named_uint("expectedSeniorAsset", expectedSeniorAsset);
+
+
         // increase maker credtline
-        clerk.raise(150);
+        clerk.raise(clerkAmount);
+        log_named_uint("remainingCredit    ", clerk.remainingCredit());
 
         // borrow
-        borrower.borrowAction(loan, 250);
+        borrower.borrowAction(loan, borrow);
 
         // maker gov liquidates
         this.file(address(dssDeploy.vat()), ilk, "line", 0);
@@ -942,17 +982,21 @@ contract Test is DSTest, Math, ProxyActions {
         hevm.warp(block.timestamp + 1 days);
         coordinator.closeEpoch();
 
-        // we cannot fulfill all orders, so we enter a submissionPeriod
-        assertTrue(coordinator.submissionPeriod());
+        // // we cannot fulfill all orders, so we enter a submissionPeriod
+        // assertTrue(coordinator.submissionPeriod());
 
-        // solve + execute the epoch
-        solveEpoch();
-
-        hevm.warp(coordinator.minChallengePeriodEnd());
-        uint pre = coordinator.lastEpochExecuted();
-        coordinator.executeEpoch();
-        uint post = coordinator.lastEpochExecuted();
-        assertEq(post, pre + 1, "could not execute epoch");
+        if(coordinator.submissionPeriod()) {
+            // solve + execute the epoch
+            solveEpoch();
+            hevm.warp(coordinator.minChallengePeriodEnd());
+            uint pre = coordinator.lastEpochExecuted();
+            coordinator.executeEpoch();
+            uint post = coordinator.lastEpochExecuted();
+            assertEq(post, pre + 1, "could not execute epoch");
+        } else {
+            hevm.warp(block.timestamp + 1 days);
+            coordinator.closeEpoch();
+        }
     }
 
     function solveEpoch() public {
