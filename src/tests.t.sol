@@ -452,7 +452,7 @@ contract Test is DSTest, Math, ProxyActions {
         uint srDebt = assessor.seniorDebt();
         uint srBal = assessor.seniorBalance();
 
-        // the loan is in default now
+        // the loan has defaulted now
         // because it was not paid back in time
         // see: 
         // function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
@@ -464,11 +464,9 @@ contract Test is DSTest, Math, ProxyActions {
 
         // interest is 5% a DAY!
         uint debt = pile.debt(loan);
+        pile.accrue(loan);
         uint nav = feed.currentNAV();
-        uint jrRat = assessor.calcJuniorRatio();
 
-        // do we need to call this?
-        assessor.dripSeniorDebt();
 
         // give borrower some dai if they need some
         // @audit - what if we only repaid partially?
@@ -480,6 +478,12 @@ contract Test is DSTest, Math, ProxyActions {
         borrower.repay(loan, debt);
         reserve.balance();
 
+        coordinator.closeEpoch();
+
+        uint jrRat = assessor.calcJuniorRatio();
+        uint srRat = assessor.seniorRatio();
+
+
 
         // Due to rounding errors the investors cannot redeem completely
         seniorInvestorA.redeemOrder(99999999 * drop.balanceOf(address(seniorInvestorA)) / 100000000);
@@ -489,34 +493,36 @@ contract Test is DSTest, Math, ProxyActions {
         log_named_uint("we took out a loan of",  loanAmt);
         log_named_uint("leading to a NAV of  ",  nav); // nav should be 0 because the loan was not repaid
         log_named_uint("sr debt is ",  srDebt);
-        log_named_uint("debt is ",  debt);
+        log_named_uint("reserve bal", reserve.totalBalance());
         log_named_uint("jrRat is ",  jrRat);
-        log_named_uint("outstanding is ",  outstanding);
+        log_named_uint("srRat is ",  srRat);
+        log_named_uint("sr price is ",  assessor.calcSeniorTokenPrice());
+        log_named_uint("jr price is ",  assessor.calcJuniorTokenPrice());
 
-        // hevm.warp(block.timestamp + 601 days);
+        hevm.warp(block.timestamp + 1 days);
 
-        // //reverts on closeEpoch();
-        // coordinator.closeEpoch();
+        //reverts on closeEpoch();
+        coordinator.closeEpoch();
 
-        // assertTrue(!coordinator.submissionPeriod());
+        assertTrue(!coordinator.submissionPeriod());
 
-        // seniorInvestorA.disburse();
+        seniorInvestorA.disburse();
 
-        // juniorInvestorA.disburse();
+        juniorInvestorA.disburse();
 
-        // // senior investor returns
-        // uint got = Dai(dai).balanceOf(address(seniorInvestorA));
-        // log_named_uint("sr investor A put in    ", rmul(amount, DEFAULT_SENIOR_RATIO));
-        // uint expected = srDebt * 102 / 100 + srBal;
-        // log_named_uint("with 2% interest, expect", expected);
-        // log_named_uint("amount received:        ", got);
+        // senior investor returns
+        uint got = Dai(dai).balanceOf(address(seniorInvestorA));
+        log_named_uint("sr investor A put in    ", rmul(amount, DEFAULT_SENIOR_RATIO));
+        uint expected = srDebt * 102 / 100 + srBal;
+        log_named_uint("with 2% interest, expect", expected);
+        log_named_uint("amount received:        ", got);
 
-        // // junior investor returns
-        // uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
-        // log_named_uint("jr investor A put in    ", rmul(amount, DEFAULT_JUNIOR_RATIO));
-        // uint expectedjr = debt - loanAmt - (got - rmul(amount, DEFAULT_SENIOR_RATIO)) + rmul(amount, DEFAULT_JUNIOR_RATIO);
-        // log_named_uint("remainder after drop payout", expectedjr);
-        // log_named_uint("amount received:        ", jrgot);
+        // junior investor returns
+        uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
+        log_named_uint("jr investor A put in    ", rmul(amount, DEFAULT_JUNIOR_RATIO));
+        uint expectedjr = debt - loanAmt - (got - rmul(amount, DEFAULT_SENIOR_RATIO)) + rmul(amount, DEFAULT_JUNIOR_RATIO);
+        log_named_uint("remainder after drop payout", expectedjr);
+        log_named_uint("amount received:        ", jrgot);
 
     }
 
