@@ -944,7 +944,15 @@ contract Test is DSTest, Math, ProxyActions {
 
         // we cannot fulfill all orders, so we enter a submissionPeriod
         assertTrue(coordinator.submissionPeriod());
+
+        // solve + execute the epoch
         solveEpoch();
+
+        hevm.warp(coordinator.minChallengePeriodEnd());
+        uint pre = coordinator.lastEpochExecuted();
+        coordinator.executeEpoch();
+        uint post = coordinator.lastEpochExecuted();
+        assertEq(post, pre + 1, "could not execute epoch");
     }
 
     function solveEpoch() public {
@@ -986,13 +994,6 @@ contract Test is DSTest, Math, ProxyActions {
 
         coordinator.submitSolution(srRedeem, jrRedeem, srSupply, jrSupply);
         assertEq(coordinator.minChallengePeriodEnd(), block.timestamp + coordinator.challengeTime(), "wrong value for challenge period");
-
-        hevm.warp(coordinator.minChallengePeriodEnd());
-
-        uint pre = coordinator.lastEpochExecuted();
-        coordinator.executeEpoch();
-        uint post = coordinator.lastEpochExecuted();
-        assertEq(post, pre + 1, "could not execute epoch");
     }
 
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
