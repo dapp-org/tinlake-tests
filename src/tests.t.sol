@@ -454,7 +454,7 @@ contract Test is DSTest, Math, ProxyActions {
 
         // the loan has defaulted now
         // because it was not paid back in time
-        // see: 
+        // see:
         // function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
         //     uint maturityDate = 600 days;
         //     priceNFTandSetRisk(tokenId, nftPrice, riskGroup, maturityDate);
@@ -879,7 +879,9 @@ contract Test is DSTest, Math, ProxyActions {
         log_named_uint("postrepay: reserve.currencyAvailable()", reserve.currencyAvailable());
         log_named_uint("postrepay: reserve.totalBalanceAvailable()", reserve.totalBalanceAvailable());
 
-        log_named_uint("prebal", Dai(dai).balanceOf(address(seniorInvestorA)));
+        uint prebal = Dai(dai).balanceOf(address(seniorInvestorA));
+        log_named_uint("prebal", prebal);
+        assertEq(prebal, 0);
 
         // now attempt to redeem as a DROP investor
         seniorInvestorA.redeemOrder(drop.balanceOf(address(seniorInvestorA)));
@@ -887,7 +889,14 @@ contract Test is DSTest, Math, ProxyActions {
         coordinator.closeEpoch();
         seniorInvestorA.disburse();
 
-        log_named_uint("postbal", Dai(dai).balanceOf(address(seniorInvestorA)));
+        uint postbal = Dai(dai).balanceOf(address(seniorInvestorA));
+        log_named_uint("postbal", postbal);
+        // -1 because of rounding
+        assertGe(postbal, amountSenior - 1);
+
+        log_named_uint("postredeem: reserve.totalBalance()", reserve.totalBalance());
+        log_named_uint("postredeem: reserve.currencyAvailable()", reserve.currencyAvailable());
+        log_named_uint("postredeem: reserve.totalBalanceAvailable()", reserve.totalBalanceAvailable());
     }
 
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
