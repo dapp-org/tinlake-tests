@@ -730,8 +730,12 @@ contract Test is DSTest, Math, ProxyActions {
         assertEq(tinRedeem_, 0);
     }
 
-    // it is a lemma that:
-    //   (drop.totalSupply() * dropPrice) + (tin.totalSupply * tinPrice) <= reserve.totalBalance() + NAV
+    function testTokenPriceRoundingConcrete() public {
+        testTokenPriceRounding(100);
+    }
+
+    // it is a lemma that as long as the pool has not been liquidated by maker:
+    //   (drop.totalSupply() * dropPrice) + (tin.totalSupply * tinPrice) <= reserve.totalBalance() + NAV + juniorStake
     //
     // where:
     //   dropPrice == seniorAssets / drop.tokenSupply()
@@ -804,12 +808,80 @@ contract Test is DSTest, Math, ProxyActions {
         log_named_uint("investor A expects", aExpects);
         log_named_uint("investor B expects", bExpects);
         log_named_uint("jr investor expects", jrExpects);
+        log_named_uint("required for all", aExpects + bExpects + jrExpects);
         log_named_uint("reserve balance", reserve.totalBalance());
         log_named_uint("required for all sr", aExpects + bExpects);
-        log_named_uint("required for all", aExpects + bExpects + jrExpects);
         log_named_uint("seniorBalancePost", assessor.seniorBalance());
 
         assertGe(reserve.totalBalance(), aExpects + bExpects + jrExpects, "not enough Dai for senior investors");
+    }
+
+    // what happens to a normal DROP investor when the maker integration is active?
+    // can they still redeem?
+    function testRedeemDropWhenMakerIsActive() public {
+        // install mkr adapter
+        reserve.depend("lending", address(clerk));
+
+        // allow an all TIN pool
+        root.relyContract(address(assessor), address(this));
+        assessor.file("minSeniorRatio", 0);
+
+        // invest TIN
+        uint amountJunior = 100;
+        Dai(dai).mint(address(juniorInvestorA), amountJunior);
+        juniorInvestorA.supplyOrder(amountJunior);
+        hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+        juniorInvestorA.disburse();
+
+        // increase maker credtline
+        clerk.raise(150);
+
+        log_named_uint("preloan: reserve.totalBalance()", reserve.totalBalance());
+        log_named_uint("preloan: reserve.currencyAvailable()", reserve.currencyAvailable());
+        log_named_uint("preloan: reserve.totalBalanceAvailable()", reserve.currencyAvailable());
+
+        // borrow
+        borrower.borrowAction(loan, 250);
+
+        log_named_uint("postloan: reserve.totalBalance()", reserve.totalBalance());
+        log_named_uint("postloan: reserve.currencyAvailable()", reserve.currencyAvailable());
+        log_named_uint("postloan: reserve.totalBalanceAvailable()", reserve.totalBalanceAvailable());
+
+        // supply via DROP
+        uint amountSenior = 10;
+        Dai(dai).mint(address(seniorInvestorA), amountSenior);
+        seniorInvestorA.supplyOrder(amountSenior);
+        hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+        seniorInvestorA.disburse();
+
+        log_named_uint("postsupply: reserve.totalBalance()", reserve.totalBalance());
+        log_named_uint("postsupply: reserve.currencyAvailable()", reserve.currencyAvailable());
+        log_named_uint("postsupply: reserve.totalBalanceAvailable()", reserve.totalBalanceAvailable());
+
+        // borrow some more
+        uint borrowAmt = 10;
+        borrower.borrow(loan, borrowAmt);
+        borrower.withdraw(loan, borrowAmt, address(borrower));
+
+        // pay some back
+        borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
+        borrower.repay(loan, 100);
+
+        log_named_uint("postrepay: reserve.totalBalance()", reserve.totalBalance());
+        log_named_uint("postrepay: reserve.currencyAvailable()", reserve.currencyAvailable());
+        log_named_uint("postrepay: reserve.totalBalanceAvailable()", reserve.totalBalanceAvailable());
+
+        log_named_uint("prebal", Dai(dai).balanceOf(address(seniorInvestorA)));
+
+        // now attempt to redeem as a DROP investor
+        seniorInvestorA.redeemOrder(drop.balanceOf(address(seniorInvestorA)));
+        hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+        seniorInvestorA.disburse();
+
+        log_named_uint("postbal", Dai(dai).balanceOf(address(seniorInvestorA)));
     }
 
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
