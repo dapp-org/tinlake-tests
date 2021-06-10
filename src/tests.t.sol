@@ -441,74 +441,53 @@ contract Test is DSTest, Math, ProxyActions {
         KYC(address(juniorInvestorA));
     }
 
-    function testDefaultLoanMaturity() public {
-        uint amount = 10 ether;
-        uint loanAmt_ = 5 ether;
+    function testDefaultNoPayback() public {
+        uint amount = 5 ether;
+        uint loanAmt_ = 2.5 ether;
         uint loanAmt  = min(amount,  loanAmt_ * 1 ether);
 
         investBothTranchesProportionally(amount);
+
         // borrow as much as we can
         borrower.borrowAction(loan, loanAmt);
         uint srDebt = assessor.seniorDebt();
         uint srBal = assessor.seniorBalance();
 
-        // the loan has defaulted now
-        // because it was not paid back in time
-        // see:
-        // function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
-        //     uint maturityDate = 600 days;
-        //     priceNFTandSetRisk(tokenId, nftPrice, riskGroup, maturityDate);
-        // }
         // accumulate debt
-        hevm.warp(block.timestamp + 600 days);
+        // loan expires / enters default
+        hevm.warp(block.timestamp + 21 days);
 
         // interest is 5% a DAY!
         uint debt = pile.debt(loan);
         pile.accrue(loan);
-        uint nav = feed.currentNAV();
 
+        // don't repay anything
 
-        // give borrower some dai if they need some
-        // @audit - what if we only repaid partially?
-        uint outstanding = debt - loanAmt;
-
-        Dai(dai).mint(address(borrower), debt - loanAmt);
-        borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
-
-        borrower.repay(loan, debt);
-        reserve.balance();
-
-        coordinator.closeEpoch();
-
-        uint jrRat = assessor.calcJuniorRatio();
-        uint srRat = assessor.seniorRatio();
-
-
-
-        // Due to rounding errors the investors cannot redeem completely
-        seniorInvestorA.redeemOrder(99999999 * drop.balanceOf(address(seniorInvestorA)) / 100000000);
-        juniorInvestorA.redeemOrder(99999999 *  tin.balanceOf(address(juniorInvestorA)) / 100000000);
-
-
-        log_named_uint("we took out a loan of",  loanAmt);
-        log_named_uint("leading to a NAV of  ",  nav); // nav should be 0 because the loan was not repaid
-        log_named_uint("sr debt is ",  srDebt);
-        log_named_uint("reserve bal", reserve.totalBalance());
-        log_named_uint("jrRat is ",  jrRat);
-        log_named_uint("srRat is ",  srRat);
-        log_named_uint("sr price is ",  assessor.calcSeniorTokenPrice());
-        log_named_uint("jr price is ",  assessor.calcJuniorTokenPrice());
+        // investors redeem
+        seniorInvestorA.redeemOrder(drop.balanceOf(address(seniorInvestorA)));
+        juniorInvestorA.redeemOrder(tin.balanceOf(address(juniorInvestorA)));
 
         hevm.warp(block.timestamp + 1 days);
 
-        //reverts on closeEpoch();
         coordinator.closeEpoch();
+        assertTrue(coordinator.submissionPeriod());
 
-        assertTrue(!coordinator.submissionPeriod());
+        // solve + execute the epoch
+        solveEpoch();
+        hevm.warp(coordinator.minChallengePeriodEnd());
+        uint pre = coordinator.lastEpochExecuted();
+        coordinator.executeEpoch();
 
         seniorInvestorA.disburse();
-
         juniorInvestorA.disburse();
+
+        log_named_uint("we took out a loan of",  loanAmt);
+        log_named_uint("leading to a NAV of  ",  feed.currentNAV()); // nav should be 0 because the loan was not repaid
+        log_named_uint("sr debt is ",  srDebt);
+        log_named_uint("reserve bal", reserve.totalBalance());
+        log_named_uint("jrRat is ",  assessor.calcJuniorRatio());
+        log_named_uint("srRat is ",  assessor.seniorRatio());
+        log_named_uint("repaid: ",  debt);
 
         // senior investor returns
         uint got = Dai(dai).balanceOf(address(seniorInvestorA));
@@ -523,7 +502,134 @@ contract Test is DSTest, Math, ProxyActions {
         uint expectedjr = debt - loanAmt - (got - rmul(amount, DEFAULT_SENIOR_RATIO)) + rmul(amount, DEFAULT_JUNIOR_RATIO);
         log_named_uint("remainder after drop payout", expectedjr);
         log_named_uint("amount received:        ", jrgot);
+    }
 
+    // this test has a loan that expires, but eventually gets repaid
+    // but we repay it before closing the epoch.. 
+    function testDefaultLoanMaturityPayback() public {
+        uint amount = 5 ether;
+        uint loanAmt_ = 2.5 ether;
+        uint loanAmt  = min(amount,  loanAmt_ * 1 ether);
+
+        investBothTranchesProportionally(amount);
+
+        // borrow as much as we can
+        borrower.borrowAction(loan, loanAmt);
+        uint srBal = assessor.seniorBalance();
+
+        // accumulate debt
+        // loan expires / enters default
+        hevm.warp(block.timestamp + 600 days);
+
+        // don't write off the loan
+        // coordinator.closeEpoch();
+
+        // interest is 5% a DAY!
+        // need to accrue
+        pile.accrue(loan);
+        uint debt = pile.debt(loan);
+
+        // give borrower the dai they need to repay the loan
+        Dai(dai).mint(address(borrower), debt);
+        borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
+        
+        // difference between repayAction and repay? 
+        borrower.repay(loan, debt);
+        reserve.balance();
+
+        hevm.warp(block.timestamp + 1 days);
+        coordinator.closeEpoch();
+
+        // investors redeem
+        seniorInvestorA.redeemOrder(drop.balanceOf(address(seniorInvestorA)));
+        juniorInvestorA.redeemOrder(tin.balanceOf(address(juniorInvestorA)));
+
+        hevm.warp(block.timestamp + 1 days);
+
+        coordinator.closeEpoch();
+
+        seniorInvestorA.disburse();
+        juniorInvestorA.disburse();
+
+        log_named_uint("took out a loan of",  loanAmt);
+        log_named_uint("leading to a NAV of  ",  feed.currentNAV());
+        log_named_uint("sr debt is ",  assessor.seniorDebt());
+        log_named_uint("reserve bal", reserve.totalBalance());
+        log_named_uint("jrRat is ",  assessor.calcJuniorRatio());
+        log_named_uint("srRat is ",  assessor.seniorRatio());
+
+        // senior investor returns
+        uint got = Dai(dai).balanceOf(address(seniorInvestorA));
+        log_named_uint("sr amount received:        ", got);
+
+        // junior investor returns
+        uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
+        log_named_uint("jr amount received:        ", jrgot);
+    }
+
+    // this test has a loan that expires
+    // gets written off,
+    // but eventually gets repaid
+    function testDefaultLoanMaturity() public {
+        uint amount = 5 ether;
+        uint loanAmt_ = 2.5 ether;
+        uint loanAmt  = min(amount,  loanAmt_ * 1 ether);
+
+        investBothTranchesProportionally(amount);
+
+        // borrow as much as we can
+        borrower.borrowAction(loan, loanAmt);
+        uint srBal = assessor.seniorBalance();
+
+        // accumulate debt
+        // loan expires / enters default
+        hevm.warp(block.timestamp + 600 days);
+
+        // here the defaulting loan should get written off
+        coordinator.closeEpoch();
+
+        // interest is 5% a DAY!
+        // need to accrue
+        pile.accrue(loan);
+        uint debt = pile.debt(loan);
+
+        // give borrower the dai they need to repay the loan
+        Dai(dai).mint(address(borrower), debt);
+        borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
+        
+        // difference between repayAction and repay? 
+        borrower.repay(loan, debt);
+        reserve.balance();
+
+        hevm.warp(block.timestamp + 1 days);
+
+        coordinator.closeEpoch();
+
+        // investors redeem
+        seniorInvestorA.redeemOrder(drop.balanceOf(address(seniorInvestorA)));
+        juniorInvestorA.redeemOrder(tin.balanceOf(address(juniorInvestorA)));
+
+        hevm.warp(block.timestamp + 1 days);
+
+        coordinator.closeEpoch();
+
+        seniorInvestorA.disburse();
+        juniorInvestorA.disburse();
+
+        log_named_uint("took out a loan of",  loanAmt);
+        log_named_uint("leading to a NAV of  ",  feed.currentNAV());
+        log_named_uint("sr debt is ",  assessor.seniorDebt());
+        log_named_uint("reserve bal", reserve.totalBalance());
+        log_named_uint("jrRat is ",  assessor.calcJuniorRatio());
+        log_named_uint("srRat is ",  assessor.seniorRatio());
+
+        // senior investor returns
+        uint got = Dai(dai).balanceOf(address(seniorInvestorA));
+        log_named_uint("sr amount received:        ", got);
+
+        // junior investor returns
+        uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
+        log_named_uint("jr amount received:        ", jrgot);
     }
 
     function testInvestmentsReturnsNormal(uint amount, uint loanAmt_) public {
