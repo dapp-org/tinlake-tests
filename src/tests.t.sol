@@ -292,7 +292,7 @@ contract Test is DSTest, Math, ProxyActions {
         // values set according to config.sol
         lenderDeployer.init(
             0.75 *10**27,  // minSeniorRatio
-            ONE,           // maxSeniorRatio
+            0.85 *10**27,  // maxSeniorRatio
             1000000 ether, // maxReserve
             1 hours,       // challengeTime
             uint(1000000229200000000000000000), // seniorInterestRate (2% / day)
@@ -1293,33 +1293,43 @@ contract TinlakeInvariants is Test {
     (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
     uint totalBalance = reserve.totalBalance();
     uint nav = feed.currentNAV();
-    uint srSupply = Tranche(address(assessor.seniorTranche())).tokenSupply();
-    uint jrSupply = Tranche(address(assessor.juniorTranche())).tokenSupply();
+    uint dropSupply = Tranche(address(assessor.seniorTranche())).tokenSupply();
+    uint tinSupply = Tranche(address(assessor.juniorTranche())).tokenSupply();
+
+    uint srSupply = Tranche(address(assessor.seniorTranche())).totalSupply();
+    uint jrSupply = Tranche(address(assessor.juniorTranche())).totalSupply();
 
     // total assets according to the reserve & navfeed
     uint lhs = totalBalance + nav;
 
     // total assets according to the token prices
-    uint rhs = rmul(srSupply, srPrice) + rmul(jrSupply, jrPrice);
+    uint rhs = rmul(dropSupply, srPrice) + rmul(tinSupply, jrPrice);
 
-    assertEq(lhs, rhs);
+    // allow rounding error as long as the rhs is 10 wei lower than the lhs
+    assertTrue(lhs >= rhs && lhs - rhs <= 10);
 
     log_named_uint("assessor.tokenBalance()", totalBalance);
     log_named_uint("feed.currentNAV()", nav);
     log_named_uint("jr price", jrPrice);
     log_named_uint("sr price", srPrice);
-    log_named_uint("jr supply", jrSupply);
-    log_named_uint("sr supply", srSupply);
+    log_named_uint("tin supply", tinSupply);
+    log_named_uint("drop supply", dropSupply);
+    log_named_uint("sr supply in this epoch", srSupply);
+    log_named_uint("jr supply in this epoch", jrSupply);
+    log_named_uint("current epoch", coordinator.currentEpoch());
+    log_named_uint("last executed epoch", coordinator.lastEpochExecuted());
+    log_named_uint("last closed epoch", coordinator.lastEpochClosed());
+    log_named_uint("srRatio", assessor.seniorRatio());
 
     log_named_uint("LHS", lhs);
     log_named_uint("RHS", rhs);
   }
 
   function testBroken() public {
-      actions.smolInvestSr(64);
+      actions.smolInvestJr(54);
+      actions.goFarIntoFuture();
+      actions.smolInvestSr(137);
       actions.closeEpoch();
-      actions.borrow(152);
-      log_named_uint("srRatio", assessor.seniorRatio());
       invariantNAV();
   }
 }
@@ -1380,11 +1390,11 @@ contract Actions is DSTest {
 
   function goFarIntoFuture() public {
     log_string("goFarIntoFuture()");
-    hevm.warp(block.timestamp + 600 days);
+    hevm.warp(block.timestamp + 60 days);
   }
 
   function repay(uint8 amount) public {
-    log_named_uint("repy()", amount);
+    log_named_uint("repay()", amount);
     borrower.repay(loan, amount * 1 ether);
   }
 
