@@ -27,6 +27,8 @@ import {PileFab, Pile} from "tinlake/borrower/fabs/pile.sol";
 import {CollectorFab} from "tinlake/borrower/fabs/collector.sol";
 import {NAVFeedFab, NAVFeed} from "tinlake/borrower/fabs/navfeed.sol";
 
+import {Vat} from "dss/vat.sol";
+
 import {Borrower} from "tinlake/test/system/users/borrower.sol";
 import {Investor} from "tinlake/test/system/users/investor.sol";
 
@@ -642,7 +644,7 @@ contract Test is DSTest, Math, ProxyActions {
 
     function testInvestmentsReturnsNormal(uint amount) public {
         amount *= 1 ether;
-        //        uint loanAmt  = amount;
+        uint loanAmt  = amount;
         if (amount == 0) return;
         if (amount > assessor.maxReserve()) return;
         investBothTranchesProportionally(amount);
@@ -1104,7 +1106,7 @@ contract Test is DSTest, Math, ProxyActions {
         Tranche senior = Tranche(lenderDeployer.seniorTranche());
         (uint orderdInEpoch, uint supplyAmt, uint redeemAmt) = senior.users(address(mgr));
         assertEq(orderdInEpoch, coordinator.currentEpoch());
-        assertEq(redeemAmt, mgrDrop);
+        assertEq(redeemAmt, mgrDropPre);
         assertEq(supplyAmt, 0);
 
         // close the epoch :)
@@ -1266,6 +1268,7 @@ contract Test is DSTest, Math, ProxyActions {
 
 contract TinlakeInvariants is Test {
   Actions actions;
+
   function setUp() override public {
     super.setUp();
     Dai(dai).mint(address(seniorInvestorA), 100 ether);
@@ -1275,6 +1278,7 @@ contract TinlakeInvariants is Test {
     targetContracts_.push(address(actions));
     hevm.warp(2 days);
   }
+
   function invariantExperiment() public {
     (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
     assertEq(assessor.totalBalance() + assessor.getNAV(),
@@ -1330,9 +1334,7 @@ contract Actions {
       // solve + execute the epoch
       parent.solveEpoch();
       hevm.warp(block.timestamp + coordinator.minChallengePeriodEnd());
-      uint pre = coordinator.lastEpochExecuted();
       coordinator.executeEpoch();
-      uint post = coordinator.lastEpochExecuted();
     }
   }
 
