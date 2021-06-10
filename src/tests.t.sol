@@ -116,7 +116,7 @@ contract Test is DSTest, Math, ProxyActions {
     RwaUrn urn;
     MockGuard authority;
 
-    Hevm hevm = Hevm(HEVM_ADDRESS);
+    Hevm public hevm = Hevm(HEVM_ADDRESS);
 
     address dai;
     Dai drop;
@@ -151,7 +151,13 @@ contract Test is DSTest, Math, ProxyActions {
     uint constant WAD = 10 ** 18;
     uint constant RAY = 10 ** 27;
 
-    function setUp() public {
+    address[] targetContracts_;
+
+    function targetContracts() public returns (address[] memory) {
+      return targetContracts_;
+    }
+
+    function setUp() public virtual {
 
         // -- deploy mcd --
 
@@ -439,6 +445,8 @@ contract Test is DSTest, Math, ProxyActions {
         KYC(address(seniorInvestorA));
         KYC(address(seniorInvestorB));
         KYC(address(juniorInvestorA));
+        /* targetContracts_.push(address(seniorInvestorA)); */
+        /* targetContracts_.push(address(juniorInvestorA)); */
     }
 
     function testDefaultNoPayback() public {
@@ -632,14 +640,14 @@ contract Test is DSTest, Math, ProxyActions {
         log_named_uint("jr amount received:        ", jrgot);
     }
 
-    function testInvestmentsReturnsNormal(uint amount, uint loanAmt_) public {
+    function testInvestmentsReturnsNormal(uint amount) public {
         amount *= 1 ether;
-        uint loanAmt  = min(amount,  loanAmt_ * 1 ether);
+        //        uint loanAmt  = amount;
         if (amount == 0) return;
         if (amount > assessor.maxReserve()) return;
         investBothTranchesProportionally(amount);
         // borrow as much as we can
-        borrower.borrowAction(loan, loanAmt);
+        borrower.borrowAction(loan, amount);
         uint srDebt = assessor.seniorDebt();
         uint srBal = assessor.seniorBalance();
         // accumulate debt
@@ -1256,7 +1264,106 @@ contract Test is DSTest, Math, ProxyActions {
     }
 }
 
+contract TinlakeInvariants is Test {
+  Actions actions;
+  function setUp() override public {
+    super.setUp();
+    Dai(dai).mint(address(seniorInvestorA), 100 ether);
+    //    Dai(dai).mint(address(seniorInvestorB), 80 ether);
+    Dai(dai).mint(address(juniorInvestorA), 80 ether);
+    actions = new Actions(this, coordinator, seniorInvestorA, juniorInvestorA, borrower, loan);
+    targetContracts_.push(address(actions));
+    hevm.warp(2 days);
+  }
+  function invariantExperiment() public {
+    (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
+    assertEq(assessor.totalBalance() + assessor.getNAV(),
+             Tranche(lenderDeployer.seniorTranche()).totalSupply() * srPrice + Tranche(lenderDeployer.juniorTranche()).totalSupply() * jrPrice);
+  }
 
+  function invariantNAV() public {
+    actions.closeEpoch();
+    (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
+    uint totalBalance = assessor.totalBalance();
+    uint nav = assessor.getNAV();
+    uint srSupply = Tranche(address(assessor.seniorTranche())).totalSupply();
+    uint jrSupply = Tranche(address(assessor.juniorTranche())).totalSupply();
+    assertEq(assessor.totalBalance() + assessor.getNAV(),
+             srSupply * srPrice + jrSupply * jrPrice);
+    log_named_uint("assessor.totalBalance()", totalBalance);
+    log_named_uint("assessor.getNAV()", nav);
+    log_named_uint("jr price", jrPrice);
+    log_named_uint("sr price", srPrice);
+    log_named_uint("jr supply", jrSupply);
+    log_named_uint("sr supply", srSupply);
+
+    log_named_uint("LHS", assessor.totalBalance() + assessor.getNAV());
+    log_named_uint("RHS", srSupply * srPrice + jrSupply * jrPrice);
+
+    assertEq(assessor.getNAV(), 0);
+  }
+
+}
+
+contract Actions {
+  EpochCoordinator coordinator;
+  Investor srInvest;
+  Investor jrInvest;
+  Borrower borrower;
+  Test parent;
+  uint loan;
+  Hevm hevm;
+  constructor(Test parent_, EpochCoordinator coordinator_, Investor a, Investor b, Borrower c, uint l) public {
+    coordinator = coordinator_;
+    parent = parent_;
+    srInvest = a;
+    jrInvest = b;
+    borrower = c;
+    loan = l;
+    hevm = parent.hevm();
+  }
+
+  function closeEpoch() public {
+    hevm.warp(block.timestamp + 1 days);
+    coordinator.closeEpoch();
+    if(coordinator.submissionPeriod()) {
+      // solve + execute the epoch
+      parent.solveEpoch();
+      hevm.warp(block.timestamp + coordinator.minChallengePeriodEnd());
+      uint pre = coordinator.lastEpochExecuted();
+      coordinator.executeEpoch();
+      uint post = coordinator.lastEpochExecuted();
+    }
+  }
+
+  function smolInvestA(uint8 amount) public {
+    srInvest.supplyOrder(amount * 1 ether);
+  }
+
+  function srdisburse() public {
+    srInvest.disburse();
+  }
+
+  function jrdisburse() public {
+    jrInvest.disburse();
+  }
+
+  function goFarIntoFuture() public {
+    hevm.warp(block.timestamp + 600 days);
+  }
+
+  function repay(uint8 amount) public {
+    borrower.repay(loan, amount * 1 ether);
+  }
+
+  function borrow(uint8 amount) public {
+    borrower.borrowAction(loan, amount * 1 ether);
+  }
+
+  function smolInvestB(uint8 amount) public {
+    jrInvest.supplyOrder(amount * 1 ether);
+  }
+}
 // 3 investors put in x_i dai
 // a borrower borrows
 // wait some time
