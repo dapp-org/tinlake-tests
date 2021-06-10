@@ -455,7 +455,7 @@ contract Test is DSTest, Math, ProxyActions {
 
         // accumulate debt
         // loan expires / enters default
-        hevm.warp(block.timestamp + 21 days);
+        hevm.warp(block.timestamp + 600 days);
 
         // interest is 5% a DAY!
         uint debt = pile.debt(loan);
