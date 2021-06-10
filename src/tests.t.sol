@@ -1276,6 +1276,8 @@ contract TinlakeInvariants is Test {
     Dai(dai).mint(address(juniorInvestorA), 80 ether);
     actions = new Actions(this, coordinator, seniorInvestorA, juniorInvestorA, borrower, loan);
     targetContracts_.push(address(actions));
+
+    // jump forwards in time to avoid an infinite loop in the navfeed
     hevm.warp(2 days);
   }
 
@@ -1288,23 +1290,25 @@ contract TinlakeInvariants is Test {
   function invariantNAV() public {
     actions.closeEpoch();
     (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
-    uint totalBalance = assessor.totalBalance();
-    uint nav = assessor.getNAV();
-    uint srSupply = Tranche(address(assessor.seniorTranche())).totalSupply();
-    uint jrSupply = Tranche(address(assessor.juniorTranche())).totalSupply();
-    assertEq(assessor.totalBalance() + assessor.getNAV(),
-             srSupply * srPrice + jrSupply * jrPrice);
-    log_named_uint("assessor.totalBalance()", totalBalance);
-    log_named_uint("assessor.getNAV()", nav);
+    uint totalBalance = reserve.totalBalance();
+    uint nav = feed.currentNAV();
+    uint srSupply = Tranche(address(assessor.seniorTranche())).tokenSupply();
+    uint jrSupply = Tranche(address(assessor.juniorTranche())).tokenSupply();
+
+    uint lhs = totalBalance + nav;
+    uint rhs = rmul(srSupply, srPrice) + rmul(jrSupply, jrPrice);
+
+    assertEq(lhs, rhs);
+
+    log_named_uint("assessor.tokenBalance()", totalBalance);
+    log_named_uint("feed.currentNAV()", nav);
     log_named_uint("jr price", jrPrice);
     log_named_uint("sr price", srPrice);
     log_named_uint("jr supply", jrSupply);
     log_named_uint("sr supply", srSupply);
 
-    log_named_uint("LHS", assessor.totalBalance() + assessor.getNAV());
-    log_named_uint("RHS", srSupply * srPrice + jrSupply * jrPrice);
-
-    assertEq(assessor.getNAV(), 0);
+    log_named_uint("LHS", lhs);
+    log_named_uint("RHS", rhs);
   }
 
 }
@@ -1338,7 +1342,7 @@ contract Actions {
     }
   }
 
-  function smolInvestA(uint8 amount) public {
+  function smolInvestSr(uint8 amount) public {
     srInvest.supplyOrder(amount * 1 ether);
   }
 
@@ -1362,7 +1366,7 @@ contract Actions {
     borrower.borrowAction(loan, amount * 1 ether);
   }
 
-  function smolInvestB(uint8 amount) public {
+  function smolInvestJr(uint8 amount) public {
     jrInvest.supplyOrder(amount * 1 ether);
   }
 }
