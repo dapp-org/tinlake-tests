@@ -1145,10 +1145,13 @@ contract Test is DSTest, Math, ProxyActions {
         );
     }
 
-    function solveEpoch() public {
+    function solveEpoch() public returns (bool) {
         Tranche senior = Tranche(lenderDeployer.seniorTranche());
         Tranche junior = Tranche(lenderDeployer.juniorTranche());
 
+        string[] memory inputs = new string[](12);
+
+        {
         string memory dropInvest    = uint2str(senior.totalSupply());
         string memory dropRedeem    = uint2str(senior.totalRedeem());
         string memory tinInvest     = uint2str(junior.totalSupply());
@@ -1163,7 +1166,6 @@ contract Test is DSTest, Math, ProxyActions {
         string memory maxDropRatio  = uint2str(assessor.maxSeniorRatio());
         string memory maxReserve    = uint2str(assessor.maxReserve());
 
-        string[] memory inputs = new string[](12);
         inputs[0] = "node";
         inputs[1] = "lib/solver/index.js";
         inputs[2] = dropInvest;
@@ -1176,14 +1178,14 @@ contract Test is DSTest, Math, ProxyActions {
         inputs[9] = minDropRatio;
         inputs[10] = maxDropRatio;
         inputs[11] = maxReserve;
+        }
 
-        bytes memory ret = hevm.ffi(inputs);
-        (bool isFeasible, uint srSupply, uint srRedeem, uint jrSupply, uint jrRedeem) = abi.decode(ret, (bool,uint,uint,uint,uint));
-
-        require(isFeasible, "epoch has no solution");
+        (bool isFeasible, uint srSupply, uint srRedeem, uint jrSupply, uint jrRedeem) = abi.decode(hevm.ffi(inputs), (bool,uint,uint,uint,uint));
 
         coordinator.submitSolution(srRedeem, jrRedeem, srSupply, jrSupply);
         assertEq(coordinator.minChallengePeriodEnd(), block.timestamp + coordinator.challengeTime(), "wrong value for challenge period");
+
+        return isFeasible;
     }
 
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
@@ -1288,14 +1290,16 @@ contract TinlakeInvariants is Test {
   }
 
   function invariantNAV() public {
-    actions.closeEpoch();
     (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
     uint totalBalance = reserve.totalBalance();
     uint nav = feed.currentNAV();
     uint srSupply = Tranche(address(assessor.seniorTranche())).tokenSupply();
     uint jrSupply = Tranche(address(assessor.juniorTranche())).tokenSupply();
 
+    // total assets according to the reserve & navfeed
     uint lhs = totalBalance + nav;
+
+    // total assets according to the token prices
     uint rhs = rmul(srSupply, srPrice) + rmul(jrSupply, jrPrice);
 
     assertEq(lhs, rhs);
@@ -1311,9 +1315,16 @@ contract TinlakeInvariants is Test {
     log_named_uint("RHS", rhs);
   }
 
+  function testBroken() public {
+      actions.smolInvestSr(64);
+      actions.closeEpoch();
+      actions.borrow(152);
+      log_named_uint("srRatio", assessor.seniorRatio());
+      invariantNAV();
+  }
 }
 
-contract Actions {
+contract Actions is DSTest {
   EpochCoordinator coordinator;
   Investor srInvest;
   Investor jrInvest;
@@ -1332,41 +1343,58 @@ contract Actions {
   }
 
   function closeEpoch() public {
+    log_string("closeEpoch()");
     hevm.warp(block.timestamp + 1 days);
     coordinator.closeEpoch();
     if(coordinator.submissionPeriod()) {
+      log_string("partial fulfillment");
+
       // solve + execute the epoch
-      parent.solveEpoch();
+      bool feasible = parent.solveEpoch();
+
+      uint f;
+      if (feasible) { f = 1; } else { f = 0; }
+      log_named_uint("feasible", f);
+
       hevm.warp(block.timestamp + coordinator.minChallengePeriodEnd());
       coordinator.executeEpoch();
+    } else {
+      log_string("full fulfillment");
     }
   }
 
   function smolInvestSr(uint8 amount) public {
+    log_named_uint("smolInvestSr()", amount);
     srInvest.supplyOrder(amount * 1 ether);
   }
 
   function srdisburse() public {
+    log_string("srdisburse()");
     srInvest.disburse();
   }
 
   function jrdisburse() public {
+    log_string("jrdisburse()");
     jrInvest.disburse();
   }
 
   function goFarIntoFuture() public {
+    log_string("goFarIntoFuture()");
     hevm.warp(block.timestamp + 600 days);
   }
 
   function repay(uint8 amount) public {
+    log_named_uint("repy()", amount);
     borrower.repay(loan, amount * 1 ether);
   }
 
   function borrow(uint8 amount) public {
+    log_named_uint("borrow()", amount);
     borrower.borrowAction(loan, amount * 1 ether);
   }
 
   function smolInvestJr(uint8 amount) public {
+    log_named_uint("smolInvestJr()", amount);
     jrInvest.supplyOrder(amount * 1 ether);
   }
 }
