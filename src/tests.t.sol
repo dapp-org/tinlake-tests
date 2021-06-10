@@ -505,7 +505,7 @@ contract Test is DSTest, Math, ProxyActions {
     }
 
     // this test has a loan that expires, but eventually gets repaid
-    // but we repay it before closing the epoch.. 
+    // but we repay it before closing the epoch..
     function testDefaultLoanMaturityPayback() public {
         uint amount = 5 ether;
         uint loanAmt_ = 2.5 ether;
@@ -532,8 +532,8 @@ contract Test is DSTest, Math, ProxyActions {
         // give borrower the dai they need to repay the loan
         Dai(dai).mint(address(borrower), debt);
         borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
-        
-        // difference between repayAction and repay? 
+
+        // difference between repayAction and repay?
         borrower.repay(loan, debt);
         reserve.balance();
 
@@ -596,8 +596,8 @@ contract Test is DSTest, Math, ProxyActions {
         // give borrower the dai they need to repay the loan
         Dai(dai).mint(address(borrower), debt);
         borrower.doApproveCurrency(borrowerDeployer.shelf(), type(uint).max);
-        
-        // difference between repayAction and repay? 
+
+        // difference between repayAction and repay?
         borrower.repay(loan, debt);
         reserve.balance();
 
@@ -1007,7 +1007,7 @@ contract Test is DSTest, Math, ProxyActions {
 
     // what happens when maker decides to liquidate the pool?
     // function testMakerLiquidation(uint128 amountJunior, uint128 clerkAmount, uint128 borrow) public {
-    //     if(    amountJunior + clerkAmount < borrow 
+    //     if(    amountJunior + clerkAmount < borrow
     //         || amountJunior > assessor.maxReserve()
     //         || clerkAmount > assessor.maxReserve()
     //         || borrow > assessor.maxReserve()
@@ -1072,10 +1072,25 @@ contract Test is DSTest, Math, ProxyActions {
         this.file(address(dssDeploy.vat()), ilk, "line", 0);
         oracle.tell(ilk);
 
+        // cache some vars
+        uint mgrDropPre = drop.balanceOf(address(mgr));
+        uint tinPricePre = assessor.calcJuniorTokenPrice();
+        uint dropPricePre = assessor.calcSeniorTokenPrice();
+        uint juniorStakePre = clerk.juniorStake();
+
         // trigger a soft liquidation in the manager
-        uint mgrDrop = drop.balanceOf(address(mgr));
-        log_named_uint("mgrDrop", mgrDrop);
         mgr.tell();
+
+        // post mgr.tell() checks
+        assertTrue(!clerk.mkrActive(), "clerk should be disabled now");
+        assertEq(assessor.calcSeniorTokenPrice(), dropPricePre, "drop price has changed");
+        assertEq(clerk.juniorStake(), 0, "juniorStake is not zero");
+        assertEq(clerk.remainingCredit(), 0);
+        assertEq(
+            assessor.calcJuniorTokenPrice(),
+            tinPricePre - rdiv(juniorStakePre, tin.totalSupply()),
+            "tin price has not been reduced to cover the juniorStake"
+        );
 
         // redeem order has been submitted
         Tranche senior = Tranche(lenderDeployer.seniorTranche());
@@ -1088,9 +1103,6 @@ contract Test is DSTest, Math, ProxyActions {
         hevm.warp(block.timestamp + 1 days);
         coordinator.closeEpoch();
 
-        // // we cannot fulfill all orders, so we enter a submissionPeriod
-        // assertTrue(coordinator.submissionPeriod());
-
         if(coordinator.submissionPeriod()) {
             // solve + execute the epoch
             solveEpoch();
@@ -1099,10 +1111,28 @@ contract Test is DSTest, Math, ProxyActions {
             coordinator.executeEpoch();
             uint post = coordinator.lastEpochExecuted();
             assertEq(post, pre + 1, "could not execute epoch");
+
+            Vat vat = dssDeploy.vat();
+            (uint preInk, uint preArt) = vat.urns(ilk, address(urn));
+
+            // mkr tries to get some monies back
+            mgr.unwind(pre);
+
+            // but there is nothing to give them so they get nothing
+            (uint postInk, uint postArt) = vat.urns(ilk, address(urn));
+            assertEq(preArt, postArt);
+            assertEq(preInk, postInk);
         } else {
             hevm.warp(block.timestamp + 1 days);
             coordinator.closeEpoch();
         }
+
+        // token price checks
+        assertLe(
+            rmul(drop.totalSupply(), assessor.calcSeniorTokenPrice()) + rmul(tin.totalSupply(), assessor.calcJuniorTokenPrice()),
+            reserve.totalBalance() + feed.currentNAV(),
+            "incorrect token prices"
+        );
     }
 
     function solveEpoch() public {
