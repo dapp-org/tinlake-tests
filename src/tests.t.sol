@@ -71,7 +71,7 @@ interface Hevm {
     function ffi(string[] calldata) external returns (bytes memory);
 }
 
-// helpers to deal with ds-pause related beuracracy
+// helpers to deal with ds-pause related beaurocracy
 contract ProxyActions {
     DSPause pause;
     GovActions govActions;
@@ -1429,9 +1429,3 @@ contract Actions is DSTest {
     jrInvest.supplyOrder(amount * 1 ether);
   }
 }
-// 3 investors put in x_i dai
-// a borrower borrows
-// wait some time
-// they repay their loan
-// THERE SHOULD BE NO WAY FOR investor 0 to get more than
-// x_0 * 1.03
