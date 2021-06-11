@@ -1136,7 +1136,7 @@ contract Test is DSTest, Math, ProxyActions {
         );
     }
 
-    function solveEpoch() public returns (bool) {
+    function solveEpoch() public returns (bool isFeasible, uint srSupply, uint srRedeem, uint jrSupply, uint jrRedeem) {
         Tranche senior = Tranche(lenderDeployer.seniorTranche());
         Tranche junior = Tranche(lenderDeployer.juniorTranche());
 
@@ -1171,12 +1171,10 @@ contract Test is DSTest, Math, ProxyActions {
         inputs[11] = maxReserve;
         }
 
-        (bool isFeasible, uint srSupply, uint srRedeem, uint jrSupply, uint jrRedeem) = abi.decode(hevm.ffi(inputs), (bool,uint,uint,uint,uint));
+        (isFeasible, srSupply, srRedeem, jrSupply, jrRedeem) = abi.decode(hevm.ffi(inputs), (bool,uint,uint,uint,uint));
 
         coordinator.submitSolution(srRedeem, jrRedeem, srSupply, jrSupply);
         assertEq(coordinator.minChallengePeriodEnd(), block.timestamp + coordinator.challengeTime(), "wrong value for challenge period");
-
-        return isFeasible;
     }
 
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
@@ -1274,13 +1272,21 @@ contract TinlakeInvariants is Test {
     hevm.warp(2 days);
   }
 
-  function invariantExperiment() public {
-    (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
-    assertEq(assessor.totalBalance() + assessor.getNAV(),
-             Tranche(lenderDeployer.seniorTranche()).totalSupply() * srPrice + Tranche(lenderDeployer.juniorTranche()).totalSupply() * jrPrice);
+  // lets find some cases where srRatio goes above ONE
+  function invariantSrRatio() public {
+      assertLe(assessor.seniorRatio(), ONE);
   }
 
-  function invariantNAV() public {
+  // senior debt + senior reserves == drop supply * drop price
+  function invariantSeniorAssets() public {
+    (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
+    uint dropSupply = Tranche(address(assessor.seniorTranche())).tokenSupply();
+
+    assertEq(assessor.seniorDebt() + assessor.seniorBalance(), rmul(srPrice, dropSupply));
+  }
+
+  // value of all tokens == total assets (modulo rounding)
+  function invariantTotalAssets() public {
     (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
     uint totalBalance = reserve.totalBalance();
     uint nav = feed.currentNAV();
@@ -1291,13 +1297,19 @@ contract TinlakeInvariants is Test {
     uint jrSupply = Tranche(address(assessor.juniorTranche())).totalSupply();
 
     // total assets according to the reserve & navfeed
-    uint lhs = totalBalance + nav;
+    uint totalAssets = totalBalance + nav;
 
     // total assets according to the token prices
-    uint rhs = rmul(dropSupply, srPrice) + rmul(tinSupply, jrPrice);
+    uint tokenValue = rmul(dropSupply, srPrice) + rmul(tinSupply, jrPrice);
 
-    // allow rounding error as long as the rhs is 10 wei lower than the lhs
-    assertTrue(lhs >= rhs && lhs - rhs <= 10);
+    // allow rounding error as long as the tokenValue is lt 10 wei lower than the totalAssets
+    assertTrue(
+        totalAssets >= tokenValue
+        && totalAssets - tokenValue <= 10
+    );
+
+    // senior ratio should
+    assertLe(assessor.seniorRatio(), ONE);
 
     log_named_uint("assessor.tokenBalance()", totalBalance);
     log_named_uint("feed.currentNAV()", nav);
@@ -1312,16 +1324,61 @@ contract TinlakeInvariants is Test {
     log_named_uint("last closed epoch", coordinator.lastEpochClosed());
     log_named_uint("srRatio", assessor.seniorRatio());
 
-    log_named_uint("LHS", lhs);
-    log_named_uint("RHS", rhs);
+    log_named_uint("totalAssets", totalAssets);
+    log_named_uint("tokenValue", tokenValue);
+  }
+
+  function logState() public {
+    (uint jrPrice, uint srPrice) = assessor.calcTokenPrices();
+    uint dropSupply = Tranche(address(assessor.seniorTranche())).tokenSupply();
+    uint tinSupply = Tranche(address(assessor.juniorTranche())).tokenSupply();
+    uint srSupplied = Tranche(address(assessor.seniorTranche())).totalSupply();
+    uint jrSupplied = Tranche(address(assessor.juniorTranche())).totalSupply();
+
+    log_string("");
+    log_string("----------------------------------------------------------------------");
+    log_string("");
+    log_named_uint("assessor.totalBalance()", assessor.totalBalance());
+    log_named_uint("feed.currentNAV()", feed.currentNAV());
+    log_named_uint("jr price", jrPrice);
+    log_named_uint("sr price", srPrice);
+    log_named_uint("tin supply", tinSupply);
+    log_named_uint("drop supply", dropSupply);
+    log_named_uint("sr supply in this epoch", srSupplied);
+    log_named_uint("jr supply in this epoch", jrSupplied);
+    log_named_uint("current epoch", coordinator.currentEpoch());
+    log_named_uint("last executed epoch", coordinator.lastEpochExecuted());
+    log_named_uint("last closed epoch", coordinator.lastEpochClosed());
+    log_named_uint("srRatio", assessor.seniorRatio());
+    log_named_uint("srDebt", assessor.seniorDebt());
+    log_named_uint("lastUpdateSeniorInterest", assessor.lastUpdateSeniorInterest());
+    log_string("");
+    log_string("----------------------------------------------------------------------");
   }
 
   function testBroken() public {
-      actions.smolInvestJr(54);
-      actions.goFarIntoFuture();
-      actions.smolInvestSr(137);
-      actions.closeEpoch();
-      invariantNAV();
+    actions.smolInvestJr(116);
+    actions.smolInvestSr(215);
+    actions.smolInvestJr(59);
+    actions.closeEpoch();
+    actions.jrdisburse();
+    actions.smolInvestJr(227);
+    logState();
+    actions.goFarIntoFuture();
+    logState();
+    actions.goFarIntoFuture();
+    logState();
+    actions.goFarIntoFuture();
+    logState();
+    actions.goFarIntoFuture();
+    logState();
+    actions.goFarIntoFuture();
+    logState();
+    actions.borrow(115);
+    logState();
+    actions.closeEpoch();
+    logState();
+    invariantSrRatio();
   }
 }
 
@@ -1351,11 +1408,15 @@ contract Actions is DSTest {
       log_string("partial fulfillment");
 
       // solve + execute the epoch
-      bool feasible = parent.solveEpoch();
+      (bool feasible, uint srSupply, uint srRedeem, uint jrSupply, uint jrRedeem) = parent.solveEpoch();
 
       uint f;
       if (feasible) { f = 1; } else { f = 0; }
       log_named_uint("feasible", f);
+      log_named_uint("srSupply", srSupply);
+      log_named_uint("srRedeem", srRedeem);
+      log_named_uint("jrSupply", jrSupply);
+      log_named_uint("jrRedeem", jrRedeem);
 
       hevm.warp(block.timestamp + coordinator.minChallengePeriodEnd());
       coordinator.executeEpoch();
