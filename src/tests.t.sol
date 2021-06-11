@@ -454,7 +454,7 @@ contract Test is DSTest, Math, ProxyActions {
     }
 
 
-    // currently BAIL because the 600 day warp overflows the solver
+    // will BAIL because the 600 day warp overflows the solver
     function testDefaultNoPayback() public {
         uint amount = 5 ether;
         investBothTranchesProportionally(amount);
@@ -466,10 +466,9 @@ contract Test is DSTest, Math, ProxyActions {
 
         // accumulate debt
         // loan expires / enters default
-        // this test is Bail
-        // right now because this is too much interest that accumulates
-        // and the solver can't handle
-        // likely overflow from time warp
+        // change uint maturityDate = 20 days;
+        // in base_system.sol to see 0 amounts recieved 
+        // and warp 20 days
         hevm.warp(block.timestamp + 600 days);
 
         // interest is 5% a DAY!
@@ -485,19 +484,17 @@ contract Test is DSTest, Math, ProxyActions {
         hevm.warp(block.timestamp + 1 days);
 
         coordinator.closeEpoch();
-        // assertTrue(coordinator.submissionPeriod());
-
-        // // solve + execute the epoch
-        // solveEpoch();
-        // hevm.warp(coordinator.minChallengePeriodEnd());
-        // uint pre = coordinator.lastEpochExecuted();
-        // coordinator.executeEpoch();
+        // solve + execute the epoch
+        solveEpoch();
+        hevm.warp(coordinator.minChallengePeriodEnd());
+        uint pre = coordinator.lastEpochExecuted();
+        coordinator.executeEpoch();
 
         seniorInvestorA.disburse();
         juniorInvestorA.disburse();
 
         log_named_uint("we took out a loan of",  amount);
-        log_named_uint("leading to a NAV of  ",  feed.currentNAV()); // nav should be 0 because the loan was not repaid
+        log_named_uint("leading to a NAV of  ",  feed.currentNAV());
         log_named_uint("sr debt is ",  srDebt);
         log_named_uint("reserve bal", reserve.totalBalance());
         log_named_uint("jrRat is ",  assessor.calcJuniorRatio());
@@ -506,16 +503,10 @@ contract Test is DSTest, Math, ProxyActions {
 
         // senior investor returns
         uint got = Dai(dai).balanceOf(address(seniorInvestorA));
-        // log_named_uint("sr investor A put in    ", rmul(amount, DEFAULT_SENIOR_RATIO));
-        // uint expected = srDebt * 102 / 100 + srBal;
-        // log_named_uint("with 2% interest, expect", expected);
         log_named_uint("amount received:        ", got);
 
         // junior investor returns
         uint jrgot = Dai(dai).balanceOf(address(juniorInvestorA));
-        // log_named_uint("jr investor A put in    ", rmul(amount, DEFAULT_JUNIOR_RATIO));
-        // uint expectedjr = debt - loanAmt - (got - rmul(amount, DEFAULT_SENIOR_RATIO)) + rmul(amount, DEFAULT_JUNIOR_RATIO);
-        // log_named_uint("remainder after drop payout", expectedjr);
         log_named_uint("amount received:        ", jrgot);
     }
 
