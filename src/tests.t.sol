@@ -132,6 +132,8 @@ contract Test is DSTest, Math, ProxyActions {
     uint constant public DEFAULT_SENIOR_RATIO = 82 * 10**25;
     uint constant public DEFAULT_JUNIOR_RATIO = 18 * 10**25;
     uint loan;
+    uint tokenId;
+    bytes32 lookupId;
 
     // users
     Borrower borrower;
@@ -397,7 +399,7 @@ contract Test is DSTest, Math, ProxyActions {
                                 borrowerDeployer.pile());
 
         // set up and price the nft collateral
-        uint tokenId = collateralNFT.issue(address(borrower));
+        tokenId = collateralNFT.issue(address(borrower));
         feed = NAVFeed(borrowerDeployer.feed());
 
         // new risk type with sane NAV value
@@ -1173,13 +1175,14 @@ contract Test is DSTest, Math, ProxyActions {
 
         (isFeasible, srSupply, srRedeem, jrSupply, jrRedeem) = abi.decode(hevm.ffi(inputs), (bool,uint,uint,uint,uint));
 
-        coordinator.submitSolution(srRedeem, jrRedeem, srSupply, jrSupply);
+        int valid = coordinator.submitSolution(srRedeem, jrRedeem, jrSupply, srSupply);
+        assertEq(uint(valid), 0, "not a valid solution");
         assertEq(coordinator.minChallengePeriodEnd(), block.timestamp + coordinator.challengeTime(), "wrong value for challenge period");
     }
 
     function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
         uint maturityDate = 600 days;
-        bytes32 lookupId = keccak256(abi.encodePacked(address(collateralNFT), tokenId));
+        lookupId = keccak256(abi.encodePacked(address(collateralNFT), tokenId));
 
         // -- authorize this contract
         root.relyContract(address(feed), address(this));
@@ -1355,31 +1358,6 @@ contract TinlakeInvariants is Test {
     log_string("");
     log_string("----------------------------------------------------------------------");
   }
-
-  function testBroken() public {
-    actions.smolInvestJr(116);
-    actions.smolInvestSr(215);
-    actions.smolInvestJr(59);
-    actions.closeEpoch();
-    actions.jrdisburse();
-    actions.smolInvestJr(227);
-    logState();
-    actions.goFarIntoFuture();
-    logState();
-    actions.goFarIntoFuture();
-    logState();
-    actions.goFarIntoFuture();
-    logState();
-    actions.goFarIntoFuture();
-    logState();
-    actions.goFarIntoFuture();
-    logState();
-    actions.borrow(115);
-    logState();
-    actions.closeEpoch();
-    logState();
-    invariantSrRatio();
-  }
 }
 
 contract Actions is DSTest {
@@ -1418,7 +1396,7 @@ contract Actions is DSTest {
       log_named_uint("jrSupply", jrSupply);
       log_named_uint("jrRedeem", jrRedeem);
 
-      hevm.warp(block.timestamp + coordinator.minChallengePeriodEnd());
+      hevm.warp(coordinator.minChallengePeriodEnd());
       coordinator.executeEpoch();
     } else {
       log_string("full fulfillment");
