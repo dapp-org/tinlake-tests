@@ -2,6 +2,7 @@
 pragma experimental ABIEncoderV2;
 pragma solidity ^0.7.6;
 
+import "./utils.sol";
 import {DSTest} from "ds-test/test.sol";
 import {Math} from "tinlake-math/math.sol";
 import {Dai} from "dss/dai.sol";
@@ -52,8 +53,6 @@ import {
     PauseFab
 } from "dss-deploy/DssDeploy.sol";
 import {MockGuard} from "dss-deploy/DssDeploy.t.base.sol";
-import {GovActions} from "dss-deploy/govActions.sol";
-import {DSPause} from "ds-pause/pause.sol";
 
 import {AuthGemJoin} from "dss-gem-joins/join-auth.sol";
 import {RwaToken} from "rwa-example/RwaToken.sol";
@@ -62,52 +61,7 @@ import {RwaUrn} from "rwa-example/RwaUrn.sol";
 
 import {Spotter} from "dss/spot.sol";
 
-interface Hevm {
-    function warp(uint256) external;
-    function roll(uint256) external;
-    function store(address,bytes32,bytes32) external;
-    function sign(uint,bytes32) external returns (uint8,bytes32,bytes32);
-    function addr(uint) external returns (address);
-    function ffi(string[] calldata) external returns (bytes memory);
-}
-
-// helpers to deal with ds-pause related beaurocracy
-contract ProxyActions {
-    DSPause pause;
-    GovActions govActions;
-
-    function rely(address from, address to) external {
-        address      usr = address(govActions);
-        bytes32      tag;  assembly { tag := extcodehash(usr) }
-        bytes memory fax = abi.encodeWithSignature("rely(address,address)", from, to);
-        uint         eta = block.timestamp;
-
-        pause.plot(usr, tag, fax, eta);
-        pause.exec(usr, tag, fax, eta);
-    }
-
-    function file(address who, bytes32 ilk, bytes32 what, uint256 data) external {
-        address      usr = address(govActions);
-        bytes32      tag;  assembly { tag := extcodehash(usr) }
-        bytes memory fax = abi.encodeWithSignature("file(address,bytes32,bytes32,uint256)", who, ilk, what, data);
-        uint         eta = block.timestamp;
-
-        pause.plot(usr, tag, fax, eta);
-        pause.exec(usr, tag, fax, eta);
-    }
-
-    function file(address who, bytes32 ilk, bytes32 what, address data) external {
-        address      usr = address(govActions);
-        bytes32      tag;  assembly { tag := extcodehash(usr) }
-        bytes memory fax = abi.encodeWithSignature("file(address,bytes32,bytes32,address)", who, ilk, what, data);
-        uint         eta = block.timestamp;
-
-        pause.plot(usr, tag, fax, eta);
-        pause.exec(usr, tag, fax, eta);
-    }
-}
-
-contract Test is DSTest, Math, ProxyActions {
+contract TestSetup is DSTest, Math, ProxyActions, TestUtils {
     TinlakeRoot root;
     MKRLenderDeployer lenderDeployer;
     BorrowerDeployer borrowerDeployer;
@@ -164,7 +118,6 @@ contract Test is DSTest, Math, ProxyActions {
     function setUp() public virtual {
 
         // -- deploy mcd --
-
         uint chainId = 1;
         uint pauseDelay = 0;
         uint esmThreshold = 0;
@@ -238,7 +191,6 @@ contract Test is DSTest, Math, ProxyActions {
         // deploy rwa oracle
         string memory doc = "acab";
         uint48 remediationPeriod = 1 days;
-        // TODO: what does this mean?
         uint value = DEFAULT_NFT_PRICE;
 
         oracle = new RwaLiquidationOracle(
@@ -262,7 +214,6 @@ contract Test is DSTest, Math, ProxyActions {
         dssDeploy.jug().file(ilk, "duty", ONE); // no interest rn
 
         // integrate rwa oracle with dss spotter
-        // TODO: why?
         Spotter spotter = dssDeploy.spotter();
         this.file(address(spotter), ilk, "mat", RAY);
         this.file(address(spotter), ilk, "pip", pip);
@@ -273,7 +224,6 @@ contract Test is DSTest, Math, ProxyActions {
         this.rely(address(dssDeploy.vat()), address(gemJoin));
 
         // -- deploy tinlake --
-
         root = new TinlakeRoot(address(this), address(this));
 
         lenderDeployer = new MKRLenderDeployer(
@@ -391,8 +341,8 @@ contract Test is DSTest, Math, ProxyActions {
         root.relyContract(address(reserve), address(this));
         root.relyContract(address(clerk),   address(this));
         mgr.rely(address(clerk));
-        // -- create borrower user --
 
+        // -- create borrower user --
         borrower = new Borrower(borrowerDeployer.shelf(),
                                 address(reserve),
                                 borrowerDeployer.currency(),
@@ -446,12 +396,76 @@ contract Test is DSTest, Math, ProxyActions {
         jrMemberList = Memberlist(lenderDeployer.juniorMemberlist());
         root.relyContract(address(srMemberList), address(this));
         root.relyContract(address(jrMemberList), address(this));
+        // -- authorize our test users
         KYC(address(seniorInvestorA));
         KYC(address(seniorInvestorB));
         KYC(address(juniorInvestorA));
-        /* targetContracts_.push(address(seniorInvestorA)); */
-        /* targetContracts_.push(address(juniorInvestorA)); */
     }
+
+    function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
+        uint maturityDate = 600 days;
+        lookupId = keccak256(abi.encodePacked(address(collateralNFT), tokenId));
+
+        // -- authorize this contract
+        root.relyContract(address(feed), address(this));
+
+        // -- set price and risk
+        feed.update(lookupId, nftPrice, riskGroup);
+        // add default maturity date
+        feed.file("maturityDate", lookupId , maturityDate);
+    }
+
+    function KYC(address usr) public {
+        uint validUntil = block.timestamp + 700 days;
+        jrMemberList.updateMember(usr, validUntil);
+        srMemberList.updateMember(usr, validUntil);
+    }
+
+        function solveEpoch() public returns (bool isFeasible, uint srSupply, uint srRedeem, uint jrSupply, uint jrRedeem) {
+        Tranche senior = Tranche(lenderDeployer.seniorTranche());
+        Tranche junior = Tranche(lenderDeployer.juniorTranche());
+
+        string[] memory inputs = new string[](12);
+
+        {
+        string memory dropInvest    = uint2str(senior.totalSupply());
+        string memory dropRedeem    = uint2str(senior.totalRedeem());
+        string memory tinInvest     = uint2str(junior.totalSupply());
+        string memory tinRedeem     = uint2str(junior.totalRedeem());
+        string memory netAssetValue = uint2str(feed.currentNAV());
+
+        // TODO: should this take the maker creditline into account?
+        string memory reserve       = uint2str(reserve.totalBalance());
+
+        string memory seniorAsset   = uint2str(assessor.seniorDebt_() + assessor.seniorBalance_());
+        string memory minDropRatio  = uint2str(assessor.minSeniorRatio());
+        string memory maxDropRatio  = uint2str(assessor.maxSeniorRatio());
+        string memory maxReserve    = uint2str(assessor.maxReserve());
+
+        inputs[0] = "node";
+        inputs[1] = "lib/solver/index.js";
+        inputs[2] = dropInvest;
+        inputs[3] = dropRedeem;
+        inputs[4] = tinInvest;
+        inputs[5] = tinRedeem;
+        inputs[6] = netAssetValue;
+        inputs[7] = reserve;
+        inputs[8] = seniorAsset;
+        inputs[9] = minDropRatio;
+        inputs[10] = maxDropRatio;
+        inputs[11] = maxReserve;
+        }
+
+        (isFeasible, srSupply, srRedeem, jrSupply, jrRedeem) = abi.decode(hevm.ffi(inputs), (bool,uint,uint,uint,uint));
+
+        int valid = coordinator.submitSolution(srRedeem, jrRedeem, jrSupply, srSupply);
+        assertEq(uint(valid), 0, "not a valid solution");
+        assertEq(coordinator.minChallengePeriodEnd(), block.timestamp + coordinator.challengeTime(), "wrong value for challenge period");
+    }
+
+}
+
+contract TinlakeTests is TestSetup {
 
 
     // will BAIL because the 600 day warp overflows the solver
@@ -626,6 +640,7 @@ contract Test is DSTest, Math, ProxyActions {
         log_named_uint("jr amount received:        ", jrgot);
     }
 
+    // happy case investment, no default, no maker integration
     function testInvestmentsReturnsNormal(uint amount) public {
         amount *= 1 ether;
         uint loanAmt  = amount;
@@ -688,6 +703,7 @@ contract Test is DSTest, Math, ProxyActions {
     }
 
 
+    // simple scenario employing maker integration
     function testDraw() public {
         uint amount = 10 ether;
         investBothTranchesProportionally(10 ether);
@@ -1129,67 +1145,6 @@ contract Test is DSTest, Math, ProxyActions {
         );
     }
 
-    function solveEpoch() public returns (bool isFeasible, uint srSupply, uint srRedeem, uint jrSupply, uint jrRedeem) {
-        Tranche senior = Tranche(lenderDeployer.seniorTranche());
-        Tranche junior = Tranche(lenderDeployer.juniorTranche());
-
-        string[] memory inputs = new string[](12);
-
-        {
-        string memory dropInvest    = uint2str(senior.totalSupply());
-        string memory dropRedeem    = uint2str(senior.totalRedeem());
-        string memory tinInvest     = uint2str(junior.totalSupply());
-        string memory tinRedeem     = uint2str(junior.totalRedeem());
-        string memory netAssetValue = uint2str(feed.currentNAV());
-
-        // TODO: should this take the maker creditline into account?
-        string memory reserve       = uint2str(reserve.totalBalance());
-
-        string memory seniorAsset   = uint2str(assessor.seniorDebt_() + assessor.seniorBalance_());
-        string memory minDropRatio  = uint2str(assessor.minSeniorRatio());
-        string memory maxDropRatio  = uint2str(assessor.maxSeniorRatio());
-        string memory maxReserve    = uint2str(assessor.maxReserve());
-
-        inputs[0] = "node";
-        inputs[1] = "lib/solver/index.js";
-        inputs[2] = dropInvest;
-        inputs[3] = dropRedeem;
-        inputs[4] = tinInvest;
-        inputs[5] = tinRedeem;
-        inputs[6] = netAssetValue;
-        inputs[7] = reserve;
-        inputs[8] = seniorAsset;
-        inputs[9] = minDropRatio;
-        inputs[10] = maxDropRatio;
-        inputs[11] = maxReserve;
-        }
-
-        (isFeasible, srSupply, srRedeem, jrSupply, jrRedeem) = abi.decode(hevm.ffi(inputs), (bool,uint,uint,uint,uint));
-
-        int valid = coordinator.submitSolution(srRedeem, jrRedeem, jrSupply, srSupply);
-        assertEq(uint(valid), 0, "not a valid solution");
-        assertEq(coordinator.minChallengePeriodEnd(), block.timestamp + coordinator.challengeTime(), "wrong value for challenge period");
-    }
-
-    function priceNFTandSetRisk(uint tokenId, uint nftPrice, uint riskGroup) public {
-        uint maturityDate = 600 days;
-        lookupId = keccak256(abi.encodePacked(address(collateralNFT), tokenId));
-
-        // -- authorize this contract
-        root.relyContract(address(feed), address(this));
-
-        // -- set price and risk
-        feed.update(lookupId, nftPrice, riskGroup);
-        // add default maturity date
-        feed.file("maturityDate", lookupId , maturityDate);
-    }
-
-    function KYC(address usr) public {
-        uint validUntil = block.timestamp + 700 days;
-        jrMemberList.updateMember(usr, validUntil);
-        srMemberList.updateMember(usr, validUntil);
-    }
-
     function investBothTranchesProportionally(uint amount) public {
         uint amountSenior = rmul(amount, DEFAULT_SENIOR_RATIO);
         uint amountJunior = rmul(amount, DEFAULT_JUNIOR_RATIO);
@@ -1214,50 +1169,14 @@ contract Test is DSTest, Math, ProxyActions {
         juniorInvestorA.disburse();
 
     }
-
-    function uint2str(uint _i) internal pure returns (string memory _uintAsString) {
-          if (_i == 0) {
-              return "0";
-          }
-          uint j = _i;
-          uint len;
-          while (j != 0) {
-              len++;
-              j /= 10;
-          }
-          bytes memory bstr = new bytes(len);
-          uint k = len;
-          while (_i != 0) {
-              k = k-1;
-              uint8 temp = (48 + uint8(_i - _i / 10 * 10));
-              bytes1 b1 = bytes1(temp);
-              bstr[k] = b1;
-              _i /= 10;
-          }
-          return string(bstr);
-      }
-    function bytesToBytes32(bytes memory b, uint offset) private pure returns (bytes32) {
-      bytes32 out;
-
-      for (uint i = 0; i < 32; i++) {
-        out |= bytes32(b[offset + i] & 0xFF) >> (i * 8);
-      }
-      return out;
-    }
-
-    function min(uint x, uint y) internal returns (uint) {
-        if (x < y) return x;
-        return y;
-    }
 }
 
-contract TinlakeInvariants is Test {
+contract TinlakeInvariants is TestSetup {
   Actions actions;
 
   function setUp() override public {
     super.setUp();
     Dai(dai).mint(address(seniorInvestorA), 100 ether);
-    //    Dai(dai).mint(address(seniorInvestorB), 80 ether);
     Dai(dai).mint(address(juniorInvestorA), 80 ether);
     actions = new Actions(this, coordinator, seniorInvestorA, juniorInvestorA, borrower, loan);
     targetContracts_.push(address(actions));
@@ -1305,21 +1224,7 @@ contract TinlakeInvariants is Test {
     // senior ratio should
     assertLe(assessor.seniorRatio(), ONE);
 
-    log_named_uint("assessor.tokenBalance()", totalBalance);
-    log_named_uint("feed.currentNAV()", nav);
-    log_named_uint("jr price", jrPrice);
-    log_named_uint("sr price", srPrice);
-    log_named_uint("tin supply", tinSupply);
-    log_named_uint("drop supply", dropSupply);
-    log_named_uint("sr supply in this epoch", srSupply);
-    log_named_uint("jr supply in this epoch", jrSupply);
-    log_named_uint("current epoch", coordinator.currentEpoch());
-    log_named_uint("last executed epoch", coordinator.lastEpochExecuted());
-    log_named_uint("last closed epoch", coordinator.lastEpochClosed());
-    log_named_uint("srRatio", assessor.seniorRatio());
-
-    log_named_uint("totalAssets", totalAssets);
-    log_named_uint("tokenValue", tokenValue);
+    logState();
   }
 
   function logState() public {
@@ -1356,10 +1261,10 @@ contract Actions is DSTest {
   Investor srInvest;
   Investor jrInvest;
   Borrower borrower;
-  Test parent;
+  TestSetup parent;
   uint loan;
   Hevm hevm;
-  constructor(Test parent_, EpochCoordinator coordinator_, Investor a, Investor b, Borrower c, uint l) public {
+  constructor(TestSetup parent_, EpochCoordinator coordinator_, Investor a, Investor b, Borrower c, uint l) public {
     coordinator = coordinator_;
     parent = parent_;
     srInvest = a;
